@@ -28,6 +28,27 @@ func MapKeys[T string, V any](data map[string]V) []string {
 	return keys
 }
 
+// MergeMapKeys returns map keys only from multiple maps
+func MergeMapKeys[V any](m map[string]V, adds ...map[string]V) []string {
+	uniq := map[string]bool{}
+	for k := range m {
+		uniq[k] = true
+	}
+	for _, add := range adds {
+		for k := range add {
+			uniq[k] = true
+		}
+	}
+
+	keys := make([]string, 0, len(uniq))
+	for k := range uniq {
+		keys = append(keys, k)
+	}
+
+	sort.Strings(keys)
+	return keys
+}
+
 // Chunk slices into chunks
 func Chunk[T any](items []T, chunkSize int) (chunks [][]T) {
 	chunks = make([][]T, 0, (len(items)/chunkSize)+1)
