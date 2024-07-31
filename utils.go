@@ -1,6 +1,9 @@
 package kit
 
-import "sort"
+import (
+	"sort"
+	"strings"
+)
 
 // Uniq removes duplicates from slice
 func Uniq(slice []string) []string {
@@ -21,4 +24,31 @@ func MapKeys[T string, V any](data map[string]V) []string {
 
 	sort.Strings(keys)
 	return keys
+}
+
+// Chunk slices into chunks
+func Chunk[T any](items []T, chunkSize int) (chunks [][]T) {
+	chunks = make([][]T, 0, (len(items)/chunkSize)+1)
+	for chunkSize < len(items) {
+		items, chunks = items[chunkSize:], append(chunks, items[0:chunkSize:chunkSize])
+	}
+	return append(chunks, items)
+}
+
+// Truncate string
+func Truncate(s string, length int) string {
+	if s == "" {
+		return s
+	}
+
+	wb := strings.Split(s, "")
+	if length > len(wb) {
+		length = len(wb)
+	}
+
+	out := strings.Join(wb[:length], "")
+	if s == out {
+		return s
+	}
+	return out + "..."
 }
