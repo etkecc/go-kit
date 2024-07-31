@@ -1,6 +1,8 @@
 package kit
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"sort"
 	"strings"
 )
@@ -51,4 +53,11 @@ func Truncate(s string, length int) string {
 		return s
 	}
 	return out + "..."
+}
+
+// Hash returns sha256 hash of a string
+func Hash(str string) string {
+	h := sha256.New()
+	h.Write([]byte(str))
+	return hex.EncodeToString(h.Sum(nil))
 }
