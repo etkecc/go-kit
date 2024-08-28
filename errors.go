@@ -2,6 +2,7 @@ package kit
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 )
 
@@ -18,12 +19,12 @@ func (e ErrorResponse) Error() string {
 }
 
 // NewErrorResponse creates a new error response
-func NewErrorResponse(err error) ErrorResponse {
+func NewErrorResponse(err error) *ErrorResponse {
 	if err == nil {
-		return ErrorResponse{Err: "unknown error"}
+		return &ErrorResponse{Err: "unknown error"}
 	}
 
-	return ErrorResponse{Err: err.Error()}
+	return &ErrorResponse{Err: err.Error()}
 }
 
 // MatrixError represents an error response from the Matrix API
@@ -38,15 +39,20 @@ func (e MatrixError) Error() string {
 }
 
 // NewMatrixError creates a new Matrix error
-func NewMatrixError(code, err string) MatrixError {
-	return MatrixError{Code: code, Err: err}
+func NewMatrixError(code, err string) *MatrixError {
+	return &MatrixError{Code: code, Err: err}
 }
 
 // MatrixErrorFrom creates a new Matrix error from io.Reader
-func MatrixErrorFrom(r io.Reader) MatrixError {
-	var matrixErr MatrixError
-	if err := json.NewDecoder(r).Decode(&matrixErr); err != nil {
-		return NewMatrixError("M_UNKNOWN", err.Error())
+func MatrixErrorFrom(r io.Reader) *MatrixError {
+	if r == nil {
+		return nil
+	}
+
+	var matrixErr *MatrixError
+	data, _ := io.ReadAll(r) //nolint:errcheck // ignore error as we will return nil
+	if err := json.Unmarshal(data, &matrixErr); err != nil {
+		return NewMatrixError("M_UNKNOWN", fmt.Sprintf("failed to decode error response %q: %v", string(data), err))
 	}
 
 	return matrixErr
