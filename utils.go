@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -26,6 +27,15 @@ func MapKeys[T string, V any](data map[string]V) []string {
 
 	sort.Strings(keys)
 	return keys
+}
+
+// Unquote is a wrapper around strconv.Unquote, but returns original string if unquoting fails
+func Unquote(s string) string {
+	unquoted, err := strconv.Unquote(s)
+	if err != nil {
+		return s
+	}
+	return unquoted
 }
 
 // MergeMapKeys returns map keys only from multiple maps
