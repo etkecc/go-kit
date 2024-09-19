@@ -1,3 +1,4 @@
+// package workpool provides a simple work pool implementation
 package workpool
 
 import "sync"
