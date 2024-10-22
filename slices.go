@@ -5,11 +5,15 @@ import "cmp"
 // Uniq removes duplicates from slice
 func Uniq(slice []string) []string {
 	uniq := map[string]struct{}{}
+	result := []string{}
 	for _, k := range slice {
-		uniq[k] = struct{}{}
+		if _, ok := uniq[k]; !ok {
+			uniq[k] = struct{}{}
+			result = append(result, k)
+		}
 	}
 
-	return MapKeys(uniq)
+	return result
 }
 
 // MergeSlices and remove duplicates
