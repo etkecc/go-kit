@@ -120,3 +120,36 @@ func TestChunkZeroSize(t *testing.T) {
 	}()
 	Chunk([]int{1, 2, 3}, 0)
 }
+
+// TestReverse tests the Reverse function
+func TestReverse(t *testing.T) {
+	// Test cases
+	tests := []struct {
+		name     string
+		input    []int
+		expected []int
+	}{
+		{"Empty slice", []int{}, []int{}},
+		{"Single element", []int{1}, []int{1}},
+		{"Two elements", []int{1, 2}, []int{2, 1}},
+		{"Three elements", []int{1, 2, 3}, []int{3, 2, 1}},
+		{"Four elements", []int{1, 2, 3, 4}, []int{4, 3, 2, 1}},
+		{"Five elements", []int{1, 2, 3, 4, 5}, []int{5, 4, 3, 2, 1}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Copy the input to avoid modifying the test case's input directly
+			inputCopy := make([]int, len(tt.input))
+			copy(inputCopy, tt.input)
+
+			// Reverse the slice
+			Reverse(inputCopy)
+
+			// Check if the reversed slice matches the expected output
+			if !reflect.DeepEqual(inputCopy, tt.expected) {
+				t.Errorf("Reverse(%v) = %v, want %v", tt.input, inputCopy, tt.expected)
+			}
+		})
+	}
+}
