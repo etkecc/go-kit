@@ -2,6 +2,7 @@ package kit
 
 import (
 	"errors"
+	"net/http"
 	"strings"
 	"testing"
 )
@@ -18,7 +19,7 @@ func TestErrorResponseError(t *testing.T) {
 // TestNewErrorResponse tests the NewErrorResponse function
 func TestNewErrorResponse(t *testing.T) {
 	err := errors.New("test error")
-	errResp := NewErrorResponse(err)
+	errResp := NewErrorResponse(err, http.StatusBadGateway)
 
 	if errResp == nil {
 		t.Fatal("NewErrorResponse() returned nil, expected non-nil")
@@ -26,6 +27,10 @@ func TestNewErrorResponse(t *testing.T) {
 
 	if got := errResp.Err; got != "test error" {
 		t.Errorf("NewErrorResponse().Err = %v, want %v", got, "test error")
+	}
+
+	if got := errResp.StatusCode; got != http.StatusBadGateway {
+		t.Errorf("NewErrorResponse().StatusCode = %v, want %v", got, http.StatusBadGateway)
 	}
 }
 
