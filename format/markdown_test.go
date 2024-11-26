@@ -26,7 +26,7 @@ func TestRenderWithParagraphWrapping(t *testing.T) {
 
 func TestRenderWithMultipleParagraphs(t *testing.T) {
 	md := "This is the first paragraph.\n\nThis is the second paragraph."
-	expected := "This is the first paragraph.<br><br>This is the second paragraph."
+	expected := "<p>This is the first paragraph.</p>\n<p>This is the second paragraph.</p>"
 	got := Render(md)
 
 	if got != expected {
