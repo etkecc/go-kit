@@ -1,7 +1,7 @@
 package workpool
 
 import (
-	"sync"
+	"fmt"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -21,42 +21,51 @@ func TestNew(t *testing.T) {
 	}
 }
 
-func TestWorkPool_Do(t *testing.T) {
-	wp := New(3)
+func TestWorkPoolBasic(t *testing.T) {
+	wp := New(2) // Create a work pool with 2 workers
 
-	initialQueueLength := len(wp.queue)
-	wp.Do(func() {})
-	newQueueLength := len(wp.queue)
-
-	if newQueueLength != initialQueueLength+1 {
-		t.Fatalf("expected queue length to increase by 1, but got %d", newQueueLength-initialQueueLength)
+	var count int32
+	task := func() {
+		atomic.AddInt32(&count, 1)
 	}
-}
 
-func TestWorkPool_Run(t *testing.T) {
-	wp := New(2)
-
-	var counter int32
-	// Add tasks to increment counter
-	wp.Do(func() {
-		atomic.AddInt32(&counter, 1)
-	})
-	wp.Do(func() {
-		atomic.AddInt32(&counter, 1)
-	})
-	wp.Do(func() {
-		atomic.AddInt32(&counter, 1)
-	})
-
-	// Run the workpool and wait for tasks to complete
+	wp.Do(task).Do(task).Do(task)
 	wp.Run()
 
-	if counter != 3 {
-		t.Fatalf("expected counter to be 3, but got %d", counter)
+	if count != 3 {
+		t.Errorf("expected 3 tasks to complete, got %d", count)
 	}
 }
 
-func TestWorkPool_RunWithMoreTasksThanWorkers(t *testing.T) {
+func TestWorkPoolConcurrency(t *testing.T) {
+	wp := New(3) // Create a work pool with 3 workers
+
+	var count int32
+	task := func() {
+		time.Sleep(100 * time.Millisecond) // Simulate work
+		atomic.AddInt32(&count, 1)
+	}
+
+	start := time.Now()
+
+	// Add 3 tasks
+	wp.Do(task).Do(task).Do(task)
+
+	wp.Run()
+
+	duration := time.Since(start)
+
+	if count != 3 {
+		t.Errorf("expected 3 tasks to complete, got %d", count)
+	}
+
+	// Since there are 3 workers, all tasks should complete in ~100ms
+	if duration > 150*time.Millisecond {
+		t.Errorf("expected tasks to complete in ~100ms, took %s", duration)
+	}
+}
+
+func TestWorkPoolWithMoreTasksThanWorkers(t *testing.T) {
 	wp := New(2)
 
 	var counter int32
@@ -75,112 +84,73 @@ func TestWorkPool_RunWithMoreTasksThanWorkers(t *testing.T) {
 	}
 }
 
-func TestWorkPool_RunNoTasks(_ *testing.T) {
+func TestWorkPoolNoTasks(t *testing.T) {
+	now := time.Now()
 	wp := New(3)
 
-	// Running without any tasks should complete without issues
+	// Run with no tasks, should return immediately
 	wp.Run()
-	// If this test completes without deadlocking, it passes
+
+	if time.Since(now) > 10*time.Millisecond {
+		t.Fatalf("Expected Run() to return immediately with no tasks")
+	}
 }
 
-func TestWorkPool_PanicRecovery(t *testing.T) {
+func TestWorkPoolPanicSafety(t *testing.T) {
 	wp := New(2)
 
-	var counter int32
-	// Add a task that panics
-	wp.Do(func() {
-		panic("simulated panic")
-	})
-	// Add another task to increment the counter
-	wp.Do(func() {
-		atomic.AddInt32(&counter, 1)
-	})
+	var count int32
+	task := func() {
+		defer atomic.AddInt32(&count, 1)
+		panic("intentional panic")
+	}
 
-	// Run the workpool and wait for tasks to complete
+	wp.Do(task).Do(task).Do(task)
 	wp.Run()
 
-	if counter != 1 {
-		t.Fatalf("expected counter to be 1 after panic, but got %d", counter)
+	if count != 3 {
+		t.Errorf("expected 3 tasks to complete even with panics, got %d", count)
 	}
 }
 
-func TestWorkPool_ConcurrentTasks(t *testing.T) {
-	wp := New(10)
+func TestWorkPoolAddAfterRun(t *testing.T) {
+	wp := New(1)
 
-	var counter int32
-	// Add 100 tasks, to simulate high concurrency
-	for i := 0; i < 100; i++ {
-		wp.Do(func() {
-			atomic.AddInt32(&counter, 1)
-		})
+	var count int32
+	task := func() {
+		atomic.AddInt32(&count, 1)
 	}
 
-	// Run the workpool and wait for tasks to complete
+	wp.Do(task).Do(task)
 	wp.Run()
 
-	if counter != 100 {
-		t.Fatalf("expected counter to be 100, but got %d", counter)
+	// Try adding another task after Run()
+	wp.Do(task)
+
+	if count != 2 {
+		t.Errorf("expected 2 tasks to complete, got %d", count)
 	}
 }
 
-func TestWorkPool_TaskOrder(t *testing.T) {
-	wp := New(2)
+func BenchmarkWorkPool(b *testing.B) {
+	workerScenarios := []int{1, 5, 10, 50, 100, 500, 1000}
+	for _, workers := range workerScenarios {
+		name := fmt.Sprintf("%d", workers)
+		b.Run(name, func(b *testing.B) {
+			var completedTasks int32
+			wp := New(workers)
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				wp.Do(func() {
+					atomic.AddInt32(&completedTasks, 1)
+				})
+			}
+			wp.Run()
 
-	var order []int
-	var mu sync.Mutex
-
-	// Add tasks that append to the order slice
-	for i := 1; i <= 5; i++ {
-		val := i
-		wp.Do(func() {
-			mu.Lock()
-			defer mu.Unlock()
-			order = append(order, val)
+			if int(completedTasks) != b.N {
+				b.Errorf("Expected %d completed tasks, got %d", b.N, completedTasks)
+			}
 		})
-	}
-
-	wp.Run()
-
-	if len(order) != 5 {
-		t.Fatalf("expected 5 tasks to be executed, but got %d", len(order))
-	}
-
-	// Ensure all values from 1 to 5 are in order (since we're using 2 workers, order may not be strict)
-	expected := []int{1, 2, 3, 4, 5}
-	mu.Lock()
-	for i, v := range order {
-		if v != expected[i] {
-			t.Errorf("task %d executed out of expected order, got %d", i+1, v)
-		}
-	}
-	mu.Unlock()
-}
-
-func TestWorkPool_LongRunningTasks(t *testing.T) {
-	wp := New(3)
-
-	var counter int32
-
-	// Add long-running tasks (simulate 100ms delay)
-	for i := 0; i < 30; i++ {
-		wp.Do(func() {
-			time.Sleep(100 * time.Millisecond)
-			atomic.AddInt32(&counter, 1)
-		})
-	}
-
-	start := time.Now()
-
-	wp.Run()
-
-	elapsed := time.Since(start)
-
-	if counter != 30 {
-		t.Fatalf("expected counter to be 300, but got %d", counter)
-	}
-
-	// Ensure all tasks complete within a reasonable timeframe
-	if elapsed > 2*time.Second {
-		t.Fatalf("tasks took too long to complete, elapsed time: %v", elapsed)
 	}
 }
