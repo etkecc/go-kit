@@ -35,10 +35,10 @@ func TestTruncate(t *testing.T) {
 		{"hello world", 9, "hello wor..."},
 		{"hello world", 10, "hello worl..."},
 		{"hello world", 11, "hello world"},
-		{"こんにちは世界", 1, "こ..."},
-		{"こんにちは世界", 2, "こん..."},
-		{"こんにちは世界", 3, "こんに..."},
-		{"こんにちは世界", 9, "こんにちは世界"},
+		{"こんにちは世界", 1, "こ..."},    //nolint:gosmopolitan // test
+		{"こんにちは世界", 2, "こん..."},   //nolint:gosmopolitan // test
+		{"こんにちは世界", 3, "こんに..."},  //nolint:gosmopolitan // test
+		{"こんにちは世界", 9, "こんにちは世界"}, //nolint:gosmopolitan // test
 
 		// Empty string and single character cases
 		{"", 1, ""},
