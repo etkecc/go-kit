@@ -5,6 +5,21 @@ import (
 	"testing"
 )
 
+func TestMapFromSlice(t *testing.T) {
+	slice := []int{1, 2, 3, 2, 1}
+
+	expected := map[int]bool{
+		1: true,
+		2: true,
+		3: true,
+	}
+	result := MapFromSlice(slice)
+
+	if !reflect.DeepEqual(result, expected) {
+		t.Errorf("MapFromSlice() = %v, want %v", result, expected)
+	}
+}
+
 // TestMapKeys tests the MapKeys function
 func TestMapKeys(t *testing.T) {
 	data := map[int]string{
