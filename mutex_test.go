@@ -58,7 +58,7 @@ func TestMutex_ConcurrentAccess(t *testing.T) {
 	// Counter to check synchronized access
 	counter := 0
 
-	for i := 0; i < numGoroutines; i++ {
+	for range numGoroutines {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -98,7 +98,7 @@ func TestMutex_LockUnlockMultipleKeys(t *testing.T) {
 	results := make(map[string]int)
 	var mu sync.Mutex
 
-	for i := 0; i < numGoroutines; i++ {
+	for range numGoroutines {
 		for _, key := range keys {
 			wg.Add(1)
 			go func(key string) {

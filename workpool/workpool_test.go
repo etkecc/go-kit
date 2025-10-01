@@ -70,7 +70,7 @@ func TestWorkPoolWithMoreTasksThanWorkers(t *testing.T) {
 
 	var counter int32
 	// Add 5 tasks, but only 2 workers
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		wp.Do(func() {
 			atomic.AddInt32(&counter, 1)
 		})
