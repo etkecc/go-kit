@@ -1,32 +1,39 @@
 package crypter
 
 import (
-	"bytes"
 	"encoding/base64"
 	"errors"
 	"fmt"
-	"os"
-	"os/exec"
-	"path/filepath"
 	"strings"
 	"testing"
 )
 
-const ansibleVaultBin = "/usr/bin/ansible-vault"
+// testKey is the default 32-byte (AES-256) key used across all tests and benchmarks.
+// It is a random alphanumeric string as would be produced by e.g. pwgen -s 32.
+// Tests that specifically cover different key lengths derive shorter keys by slicing it.
+const testKey = "tp3gHlOSsRHlsEGuKIpu86sE1jM9KMZy"
 
 func TestNew_InvalidKeyLength(t *testing.T) {
 	t.Parallel()
 
-	_, err := New("short")
-	if !errors.Is(err, ErrInvalidKeyLength) {
-		t.Fatalf("expected ErrInvalidKeyLength, got %v", err)
+	for _, key := range []string{
+		"",                      // 0 bytes
+		"short",                 // 5 bytes
+		strings.Repeat("k", 15), // one below AES-128
+		strings.Repeat("k", 17), // one above AES-128
+		strings.Repeat("k", 33), // one above AES-256
+	} {
+		_, err := New(key)
+		if !errors.Is(err, ErrInvalidKeyLength) {
+			t.Fatalf("key len %d: expected ErrInvalidKeyLength, got %v", len(key), err)
+		}
 	}
 }
 
 func TestNew_OK(t *testing.T) {
 	t.Parallel()
 
-	c, err := New(strings.Repeat("k", 32))
+	c, err := New(testKey)
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
@@ -38,7 +45,7 @@ func TestNew_OK(t *testing.T) {
 func TestIsEncrypted_FastHeuristic(t *testing.T) {
 	t.Parallel()
 
-	c, err := New(strings.Repeat("k", 32))
+	c, err := New(testKey)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -60,7 +67,7 @@ func TestIsEncrypted_FastHeuristic(t *testing.T) {
 func TestEncrypt_AlreadyTagged_ReturnsInput(t *testing.T) {
 	t.Parallel()
 
-	c, err := New(strings.Repeat("k", 32))
+	c, err := New(testKey)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -75,10 +82,52 @@ func TestEncrypt_AlreadyTagged_ReturnsInput(t *testing.T) {
 	}
 }
 
+func TestEncrypt_Idempotent_RealCiphertext(t *testing.T) {
+	t.Parallel()
+
+	c, err := New(testKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	enc, err := c.Encrypt("hello")
+	if err != nil {
+		t.Fatalf("Encrypt err: %v", err)
+	}
+	enc2, err := c.Encrypt(enc)
+	if err != nil {
+		t.Fatalf("unexpected err on re-encrypt: %v", err)
+	}
+	if enc2 != enc {
+		t.Fatalf("expected unchanged ciphertext, got %q", enc2)
+	}
+}
+
+func TestEncrypt_SamePlaintext_DifferentCiphertext(t *testing.T) {
+	t.Parallel()
+
+	c, err := New(testKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	enc1, err := c.Encrypt("hello")
+	if err != nil {
+		t.Fatalf("Encrypt 1 err: %v", err)
+	}
+	enc2, err := c.Encrypt("hello")
+	if err != nil {
+		t.Fatalf("Encrypt 2 err: %v", err)
+	}
+	if enc1 == enc2 {
+		t.Fatal("expected different ciphertext for same plaintext (nonce must be random)")
+	}
+}
+
 func TestDecrypt_Plaintext_FastReturn(t *testing.T) {
 	t.Parallel()
 
-	c, err := New(strings.Repeat("k", 32))
+	c, err := New(testKey)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -96,7 +145,7 @@ func TestDecrypt_Plaintext_FastReturn(t *testing.T) {
 func TestDecrypt_TaggedButMissingEndTag(t *testing.T) {
 	t.Parallel()
 
-	c, err := New(strings.Repeat("k", 32))
+	c, err := New(testKey)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -113,7 +162,7 @@ func TestDecrypt_TaggedButMissingEndTag(t *testing.T) {
 func TestDecrypt_TaggedEmptyPayload(t *testing.T) {
 	t.Parallel()
 
-	c, err := New(strings.Repeat("k", 32))
+	c, err := New(testKey)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -130,7 +179,7 @@ func TestDecrypt_TaggedEmptyPayload(t *testing.T) {
 func TestDecrypt_Base64DecodeError_Wrapped(t *testing.T) {
 	t.Parallel()
 
-	c, err := New(strings.Repeat("k", 32))
+	c, err := New(testKey)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -144,14 +193,52 @@ func TestDecrypt_Base64DecodeError_Wrapped(t *testing.T) {
 	}
 }
 
+func TestDecrypt_ShortCiphertext_NoAuthTag(t *testing.T) {
+	t.Parallel()
+
+	c, err := New(testKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	overhead := c.aead.Overhead() // 16 for standard GCM
+
+	cases := []struct {
+		name   string
+		rawLen int
+	}{
+		// Exactly nonceSize bytes: valid nonce, zero-length ct — no room for the GCM tag.
+		{"nonce only", c.nonceSize},
+		// nonceSize + overhead - 1: partial tag, still one byte short.
+		{"partial tag", c.nonceSize + overhead - 1},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			payload := base64.RawURLEncoding.EncodeToString(make([]byte, tc.rawLen))
+			_, err := c.Decrypt(StartTag + payload + EndTag)
+			if err == nil {
+				t.Fatal("expected error")
+			}
+			if !errors.Is(err, ErrInvalidCipherText) {
+				t.Fatalf("expected ErrInvalidCipherText, got %v", err)
+			}
+		})
+	}
+}
+
 func TestNew_KeySizes(t *testing.T) {
 	t.Parallel()
 
+	// Verify that all three valid AES key sizes (128/192/256) initialize and round-trip correctly.
+	// Keys are derived by slicing testKey so the source of the bytes is always obvious.
 	for _, size := range []int{16, 24, 32} {
 		t.Run(fmt.Sprintf("AES-%d", size*8), func(t *testing.T) {
 			t.Parallel()
 
-			c, err := New(strings.Repeat("k", size))
+			c, err := New(testKey[:size])
 			if err != nil {
 				t.Fatalf("unexpected err for %d-byte key: %v", size, err)
 			}
@@ -173,7 +260,7 @@ func TestNew_KeySizes(t *testing.T) {
 func TestDecrypt_ShortRaw_InvalidCipherText(t *testing.T) {
 	t.Parallel()
 
-	c, err := New(strings.Repeat("k", 32))
+	c, err := New(testKey)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -192,7 +279,7 @@ func TestDecrypt_ShortRaw_InvalidCipherText(t *testing.T) {
 func TestEncryptDecrypt_RoundTrip_Various(t *testing.T) {
 	t.Parallel()
 
-	c, err := New(strings.Repeat("k", 32))
+	c, err := New(testKey)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -204,6 +291,11 @@ func TestEncryptDecrypt_RoundTrip_Various(t *testing.T) {
 		strings.Repeat("x", 100),
 		"A-Za-z0-9_-",
 		"line1\nline2\nline3",
+		// Multi-byte Unicode: verify byte-level round-trip is preserved.
+		"こんにちは",
+		"Привет мир",
+		"مرحبا بالعالم",
+		"🔐🗝️",
 	}
 
 	for _, in := range cases {
@@ -235,7 +327,7 @@ func TestEncryptDecrypt_RoundTrip_Various(t *testing.T) {
 func TestCrypter_ConcurrentEncryptDecrypt(t *testing.T) {
 	t.Parallel()
 
-	c, err := New(strings.Repeat("k", 32))
+	c, err := New(testKey)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -276,15 +368,15 @@ func TestCrypter_ConcurrentEncryptDecrypt(t *testing.T) {
 
 // TestEncrypt_AllocCount pins the number of heap allocations per Encrypt call.
 // If this test fails after a code change, the change introduced an unexpected allocation.
-// Expected: 4 allocs — []byte(data) copy, Seal output, output buffer, final string.
-// The nonce comes from sync.Pool and does not count.
+// Expected: 5 allocs — owned nonce copy, []byte(data) conversion, raw buffer, output buffer, final string.
+// The pool buffer used for random reading is not counted (comes from sync.Pool).
 func TestEncrypt_AllocCount(t *testing.T) {
-	c, err := New(strings.Repeat("k", 32))
+	c, err := New(testKey)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	const want = 4
+	const want = 5
 	got := testing.AllocsPerRun(200, func() {
 		_, _ = c.Encrypt("hello world")
 	})
@@ -296,11 +388,11 @@ func TestEncrypt_AllocCount(t *testing.T) {
 func TestDecrypt_AuthFail_Wrapped(t *testing.T) {
 	t.Parallel()
 
-	c1, err := New(strings.Repeat("k", 32))
+	c1, err := New(testKey)
 	if err != nil {
 		t.Fatal(err)
 	}
-	c2, err := New(strings.Repeat("z", 32))
+	c2, err := New("Wr8mNqK2vXpL5cF0aY7dSeT4hJbGzUoQ")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -319,8 +411,69 @@ func TestDecrypt_AuthFail_Wrapped(t *testing.T) {
 	}
 }
 
+func TestDecrypt_TamperedCiphertext(t *testing.T) {
+	t.Parallel()
+
+	c, err := New(testKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	enc, err := c.Encrypt("hello world")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Decode the payload, flip one byte in the ciphertext body (after the nonce),
+	// re-encode, and verify that GCM authentication rejects it.
+	raw, err := base64.RawURLEncoding.DecodeString(enc[startLen : len(enc)-1])
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	raw[c.nonceSize] ^= 0xFF // flip first ciphertext byte
+	tampered := StartTag + base64.RawURLEncoding.EncodeToString(raw) + EndTag
+
+	_, err = c.Decrypt(tampered)
+	if err == nil {
+		t.Fatal("expected error for tampered ciphertext")
+	}
+	if !errors.Is(err, ErrOpen) {
+		t.Fatalf("expected ErrOpen, got %v", err)
+	}
+}
+
+func TestDecrypt_TamperedAuthTag(t *testing.T) {
+	t.Parallel()
+
+	c, err := New(testKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	enc, err := c.Encrypt("hello world")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Flip the last byte of the GCM authentication tag.
+	raw, err := base64.RawURLEncoding.DecodeString(enc[startLen : len(enc)-1])
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	raw[len(raw)-1] ^= 0xFF // flip last byte of the auth tag
+	tampered := StartTag + base64.RawURLEncoding.EncodeToString(raw) + EndTag
+
+	_, err = c.Decrypt(tampered)
+	if err == nil {
+		t.Fatal("expected error for tampered auth tag")
+	}
+	if !errors.Is(err, ErrOpen) {
+		t.Fatalf("expected ErrOpen, got %v", err)
+	}
+}
+
 func BenchmarkIsEncrypted_Plaintext(b *testing.B) {
-	c, err := New(strings.Repeat("k", 32))
+	c, err := New(testKey)
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -335,7 +488,7 @@ func BenchmarkIsEncrypted_Plaintext(b *testing.B) {
 }
 
 func BenchmarkIsEncrypted_EncryptedLike(b *testing.B) {
-	c, err := New(strings.Repeat("k", 32))
+	c, err := New(testKey)
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -350,7 +503,7 @@ func BenchmarkIsEncrypted_EncryptedLike(b *testing.B) {
 }
 
 func BenchmarkEncrypt_Short(b *testing.B) {
-	c, err := New(strings.Repeat("k", 32))
+	c, err := New(testKey)
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -368,7 +521,7 @@ func BenchmarkEncrypt_Short(b *testing.B) {
 }
 
 func BenchmarkEncrypt_Short_Parallel(b *testing.B) {
-	c, err := New(strings.Repeat("k", 32))
+	c, err := New(testKey)
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -388,7 +541,7 @@ func BenchmarkEncrypt_Short_Parallel(b *testing.B) {
 }
 
 func BenchmarkEncrypt_100(b *testing.B) {
-	c, err := New(strings.Repeat("k", 32))
+	c, err := New(testKey)
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -406,7 +559,7 @@ func BenchmarkEncrypt_100(b *testing.B) {
 }
 
 func BenchmarkEncrypt_100_Parallel(b *testing.B) {
-	c, err := New(strings.Repeat("k", 32))
+	c, err := New(testKey)
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -426,7 +579,7 @@ func BenchmarkEncrypt_100_Parallel(b *testing.B) {
 }
 
 func BenchmarkDecrypt_PlaintextFastReturn(b *testing.B) {
-	c, err := New(strings.Repeat("k", 32))
+	c, err := New(testKey)
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -444,7 +597,7 @@ func BenchmarkDecrypt_PlaintextFastReturn(b *testing.B) {
 }
 
 func BenchmarkDecrypt_Encrypted_Short(b *testing.B) {
-	c, err := New(strings.Repeat("k", 32))
+	c, err := New(testKey)
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -465,7 +618,7 @@ func BenchmarkDecrypt_Encrypted_Short(b *testing.B) {
 }
 
 func BenchmarkDecrypt_Encrypted_100_AlphaNumDashUnderscore(b *testing.B) {
-	c, err := New(strings.Repeat("k", 32))
+	c, err := New(testKey)
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -489,127 +642,4 @@ func BenchmarkDecrypt_Encrypted_100_AlphaNumDashUnderscore(b *testing.B) {
 			b.Fatal(err)
 		}
 	}
-}
-
-func BenchmarkVault_EncryptFile_100(b *testing.B) {
-	passFile := mustVaultPassFile(b)
-	defer os.Remove(passFile)
-
-	in := strings.Repeat("Ab0_-zY9xQ", 10) // 100 chars
-	if len(in) != 100 {
-		b.Fatalf("bad input len: %d", len(in))
-	}
-
-	dir := b.TempDir()
-	fpath := filepath.Join(dir, "secret.txt")
-
-	encArgs := []string{"encrypt", "--vault-password-file", passFile, fpath}
-
-	b.ReportAllocs()
-	b.ResetTimer()
-
-	for i := 0; i < b.N; i++ {
-		if err := os.WriteFile(fpath, []byte(in), 0o600); err != nil {
-			b.Fatal(err)
-		}
-		_, err := runAnsibleVault(encArgs)
-		if err != nil {
-			b.Fatal(err)
-		}
-	}
-}
-
-func BenchmarkVault_ViewFile_Encrypted_100(b *testing.B) {
-	passFile := mustVaultPassFile(b)
-	defer os.Remove(passFile)
-
-	in := strings.Repeat("Ab0_-zY9xQ", 10) // 100 chars
-	if len(in) != 100 {
-		b.Fatalf("bad input len: %d", len(in))
-	}
-
-	dir := b.TempDir()
-	fpath := filepath.Join(dir, "secret.txt")
-
-	// Pre-encrypt once outside the timing loop.
-	if err := os.WriteFile(fpath, []byte(in), 0o600); err != nil {
-		b.Fatal(err)
-	}
-	_, err := runAnsibleVault([]string{"encrypt", "--vault-password-file", passFile, fpath})
-	if err != nil {
-		b.Fatalf("pre-encrypt failed: %v", err)
-	}
-
-	viewArgs := []string{"view", "--vault-password-file", passFile, fpath}
-
-	b.ReportAllocs()
-	b.ResetTimer()
-
-	for i := 0; i < b.N; i++ {
-		out, err := runAnsibleVault(viewArgs)
-		if err != nil {
-			b.Fatal(err)
-		}
-		if !bytes.Equal(bytes.TrimSpace(out), []byte(in)) {
-			// `view` prints plaintext file content; should match exactly.
-			b.Fatalf("view output mismatch: got %q want %q", string(out), in)
-		}
-	}
-}
-
-func BenchmarkVault_ViewFile_Plaintext_100_Overhead(b *testing.B) {
-	// Measures overhead when attempting to view a plaintext file (expected to fail).
-	passFile := mustVaultPassFile(b)
-	defer os.Remove(passFile)
-
-	in := strings.Repeat("Ab0_-zY9xQ", 10) // 100 chars
-
-	dir := b.TempDir()
-	fpath := filepath.Join(dir, "plain.txt")
-
-	viewArgs := []string{"view", "--vault-password-file", passFile, fpath}
-
-	b.ReportAllocs()
-	b.ResetTimer()
-
-	for i := 0; i < b.N; i++ {
-		if err := os.WriteFile(fpath, []byte(in), 0o600); err != nil {
-			b.Fatal(err)
-		}
-		_, _ = runAnsibleVault(viewArgs) // expected to fail; measure overhead
-	}
-}
-
-func mustVaultPassFile(b *testing.B) (path string) {
-	b.Helper()
-
-	if _, err := os.Stat(ansibleVaultBin); err != nil {
-		b.Skipf("ansible-vault not available at %s: %v", ansibleVaultBin, err)
-	}
-	if fi, err := os.Stat(ansibleVaultBin); err == nil && (fi.Mode()&0o111) == 0 {
-		b.Skipf("ansible-vault not executable: %s", ansibleVaultBin)
-	}
-
-	dir := b.TempDir()
-	path = filepath.Join(dir, "vault-pass.txt")
-	if err := os.WriteFile(path, []byte("bench-pass-please-change\n"), 0o600); err != nil {
-		b.Fatalf("write pass file: %v", err)
-	}
-	return path
-}
-
-func runAnsibleVault(args []string) ([]byte, error) {
-	cmd := exec.Command(ansibleVaultBin, args...)
-	var out, errBuf bytes.Buffer
-	cmd.Stdout = &out
-	cmd.Stderr = &errBuf
-
-	if err := cmd.Run(); err != nil {
-		msg := strings.TrimSpace(errBuf.String())
-		if msg == "" {
-			msg = err.Error()
-		}
-		return nil, errors.New("ansible-vault failed: " + msg)
-	}
-	return out.Bytes(), nil
 }
