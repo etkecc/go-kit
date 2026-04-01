@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sync"
 )
 
 const (
@@ -47,7 +48,7 @@ var (
 	ErrOpen = errors.New("crypter: aead open failed")
 )
 
-var startLen = len(StartTag)
+const startLen = len(StartTag)
 
 // Crypter provides methods to encrypt and decrypt strings using AES-GCM.
 // It uses a simple tagging format to identify encrypted values and avoid double encryption.
@@ -60,6 +61,7 @@ var startLen = len(StartTag)
 type Crypter struct {
 	aead      cipher.AEAD
 	nonceSize int
+	noncePool sync.Pool
 }
 
 // New initializes a new Crypter with the provided secret key.
@@ -82,7 +84,14 @@ func New(secret string) (*Crypter, error) {
 		return nil, fmt.Errorf("%w: %w", ErrNewGCM, err)
 	}
 
-	return &Crypter{aead: aead, nonceSize: aead.NonceSize()}, nil
+	nonceSize := aead.NonceSize()
+	return &Crypter{
+		aead:      aead,
+		nonceSize: nonceSize,
+		// Store *[]byte (pointer-sized) so pool.Put never heap-allocates the interface box.
+		// A []byte header is 24 bytes and does not fit in the interface data word; a pointer does.
+		noncePool: sync.Pool{New: func() any { b := make([]byte, nonceSize); return &b }},
+	}, nil
 }
 
 // IsEncrypted is the hot-path heuristic check. For maximum performance it only
@@ -100,13 +109,27 @@ func (c *Crypter) Encrypt(data string) (string, error) {
 		return data, nil
 	}
 
-	nonce := make([]byte, c.nonceSize)
+	noncep, ok := c.noncePool.Get().(*[]byte)
+	if !ok {
+		fmt.Println("crypter: nonce pool returned unexpected type, allocating fresh nonce")
+		b := make([]byte, c.nonceSize)
+		noncep = &b
+	}
+	nonce := *noncep
+	defer c.noncePool.Put(noncep)
+
 	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
 		return "", fmt.Errorf("%w: %w", ErrReadNonce, err)
 	}
 
 	raw := c.aead.Seal(nonce, nonce, []byte(data), nil)
-	return StartTag + base64.RawURLEncoding.EncodeToString(raw) + EndTag, nil
+
+	encodedLen := base64.RawURLEncoding.EncodedLen(len(raw))
+	buf := make([]byte, startLen, startLen+encodedLen+len(EndTag))
+	copy(buf, StartTag)
+	buf = base64.RawURLEncoding.AppendEncode(buf, raw)
+	buf = append(buf, EndTag...)
+	return string(buf), nil
 }
 
 // Decrypt returns decrypted plaintext if data is tagged; otherwise it returns data unchanged.
@@ -120,7 +143,7 @@ func (c *Crypter) Decrypt(data string) (string, error) {
 		return "", err
 	}
 	if len(raw) < c.nonceSize {
-		return "", io.ErrUnexpectedEOF
+		return "", ErrInvalidCipherText
 	}
 
 	nonce, ct := raw[:c.nonceSize], raw[c.nonceSize:]
@@ -133,10 +156,7 @@ func (c *Crypter) Decrypt(data string) (string, error) {
 }
 
 func unwrapAfterStartTag(s string) ([]byte, error) {
-	// Caller already checked IsEncrypted.
-	if len(s) <= startLen {
-		return nil, ErrInvalidCipherText
-	}
+	// Caller already checked IsEncrypted, which guarantees len(s) > startLen.
 	if s[len(s)-1] != EndTag[0] {
 		return nil, ErrInvalidCipherText
 	}

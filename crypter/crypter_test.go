@@ -2,7 +2,9 @@ package crypter
 
 import (
 	"bytes"
+	"encoding/base64"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -142,6 +144,51 @@ func TestDecrypt_Base64DecodeError_Wrapped(t *testing.T) {
 	}
 }
 
+func TestNew_KeySizes(t *testing.T) {
+	t.Parallel()
+
+	for _, size := range []int{16, 24, 32} {
+		t.Run(fmt.Sprintf("AES-%d", size*8), func(t *testing.T) {
+			t.Parallel()
+
+			c, err := New(strings.Repeat("k", size))
+			if err != nil {
+				t.Fatalf("unexpected err for %d-byte key: %v", size, err)
+			}
+			enc, err := c.Encrypt("hello")
+			if err != nil {
+				t.Fatalf("Encrypt err: %v", err)
+			}
+			out, err := c.Decrypt(enc)
+			if err != nil {
+				t.Fatalf("Decrypt err: %v", err)
+			}
+			if out != "hello" {
+				t.Fatalf("roundtrip mismatch: got %q", out)
+			}
+		})
+	}
+}
+
+func TestDecrypt_ShortRaw_InvalidCipherText(t *testing.T) {
+	t.Parallel()
+
+	c, err := New(strings.Repeat("k", 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Encode a payload that is valid base64 but decodes to fewer bytes than the nonce size (12).
+	short := base64.RawURLEncoding.EncodeToString([]byte("tooshort")) // 8 bytes < 12
+	_, err = c.Decrypt(StartTag + short + EndTag)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !errors.Is(err, ErrInvalidCipherText) {
+		t.Fatalf("expected ErrInvalidCipherText, got %v", err)
+	}
+}
+
 func TestEncryptDecrypt_RoundTrip_Various(t *testing.T) {
 	t.Parallel()
 
@@ -160,24 +207,89 @@ func TestEncryptDecrypt_RoundTrip_Various(t *testing.T) {
 	}
 
 	for _, in := range cases {
-		enc, err := c.Encrypt(in)
-		if err != nil {
-			t.Fatalf("Encrypt(%q) err: %v", in, err)
-		}
-		if enc == in {
-			t.Fatalf("expected encrypted to differ for %q", in)
-		}
-		if !strings.HasPrefix(enc, StartTag) || !strings.HasSuffix(enc, EndTag) {
-			t.Fatalf("missing tags: %q", enc)
-		}
+		t.Run(fmt.Sprintf("%q", in), func(t *testing.T) {
+			t.Parallel()
 
-		out, err := c.Decrypt(enc)
-		if err != nil {
-			t.Fatalf("Decrypt(enc(%q)) err: %v", in, err)
+			enc, err := c.Encrypt(in)
+			if err != nil {
+				t.Fatalf("Encrypt err: %v", err)
+			}
+			if enc == in {
+				t.Fatalf("expected encrypted to differ")
+			}
+			if !strings.HasPrefix(enc, StartTag) || !strings.HasSuffix(enc, EndTag) {
+				t.Fatalf("missing tags: %q", enc)
+			}
+
+			out, err := c.Decrypt(enc)
+			if err != nil {
+				t.Fatalf("Decrypt err: %v", err)
+			}
+			if out != in {
+				t.Fatalf("roundtrip mismatch: got %q", out)
+			}
+		})
+	}
+}
+
+func TestCrypter_ConcurrentEncryptDecrypt(t *testing.T) {
+	t.Parallel()
+
+	c, err := New(strings.Repeat("k", 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const goroutines = 64
+	const iterations = 100
+
+	errCh := make(chan error, goroutines)
+	for i := range goroutines {
+		go func() {
+			in := fmt.Sprintf("secret-%d", i)
+			for range iterations {
+				enc, err := c.Encrypt(in)
+				if err != nil {
+					errCh <- fmt.Errorf("Encrypt: %w", err)
+					return
+				}
+				out, err := c.Decrypt(enc)
+				if err != nil {
+					errCh <- fmt.Errorf("Decrypt: %w", err)
+					return
+				}
+				if out != in {
+					errCh <- fmt.Errorf("mismatch: got %q want %q", out, in)
+					return
+				}
+			}
+			errCh <- nil
+		}()
+	}
+
+	for range goroutines {
+		if err := <-errCh; err != nil {
+			t.Fatal(err)
 		}
-		if out != in {
-			t.Fatalf("roundtrip mismatch: in=%q out=%q", in, out)
-		}
+	}
+}
+
+// TestEncrypt_AllocCount pins the number of heap allocations per Encrypt call.
+// If this test fails after a code change, the change introduced an unexpected allocation.
+// Expected: 4 allocs — []byte(data) copy, Seal output, output buffer, final string.
+// The nonce comes from sync.Pool and does not count.
+func TestEncrypt_AllocCount(t *testing.T) {
+	c, err := New(strings.Repeat("k", 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const want = 4
+	got := testing.AllocsPerRun(200, func() {
+		_, _ = c.Encrypt("hello world")
+	})
+	if got != float64(want) {
+		t.Fatalf("Encrypt allocs = %.0f, want %d", got, want)
 	}
 }
 
@@ -255,6 +367,26 @@ func BenchmarkEncrypt_Short(b *testing.B) {
 	}
 }
 
+func BenchmarkEncrypt_Short_Parallel(b *testing.B) {
+	c, err := New(strings.Repeat("k", 32))
+	if err != nil {
+		b.Fatal(err)
+	}
+	in := "value"
+
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			_, err := c.Encrypt(in)
+			if err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+}
+
 func BenchmarkEncrypt_100(b *testing.B) {
 	c, err := New(strings.Repeat("k", 32))
 	if err != nil {
@@ -271,6 +403,26 @@ func BenchmarkEncrypt_100(b *testing.B) {
 			b.Fatal(err)
 		}
 	}
+}
+
+func BenchmarkEncrypt_100_Parallel(b *testing.B) {
+	c, err := New(strings.Repeat("k", 32))
+	if err != nil {
+		b.Fatal(err)
+	}
+	in := strings.Repeat("a", 100)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			_, err := c.Encrypt(in)
+			if err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
 }
 
 func BenchmarkDecrypt_PlaintextFastReturn(b *testing.B) {
