@@ -120,20 +120,35 @@ func TestStringToInt(t *testing.T) {
 // TestStringToSlice tests the StringToSlice function
 func TestStringToSlice(t *testing.T) {
 	tests := []struct {
+		name         string
 		input        string
 		defaultValue []string
 		expected     []string
 	}{
-		{"a,b,c", nil, []string{"a", "b", "c"}},
-		{" a , b , c ", nil, []string{"a", "b", "c"}},
-		{"", []string{"default"}, []string{"default"}},
+		// comma-separated inputs
+		{"csv", "a,b,c", nil, []string{"a", "b", "c"}},
+		{"csv with spaces", " a , b , c ", nil, []string{"a", "b", "c"}},
+		{"two elements", "x,y", nil, []string{"x", "y"}},
+
+		// empty input falls back to default
+		{"empty no default", "", nil, []string{""}},
+		{"empty with default", "", []string{"default"}, []string{"default"}},
+		{"whitespace-only no default", "   ", nil, []string{""}},
+		{"whitespace-only with default", "   ", []string{"default"}, []string{"default"}},
+
+		// non-empty, no comma → returns the value itself, not the default
+		{"single word no default", "hello", nil, []string{"hello"}},
+		{"single word with default", "hello", []string{"default"}, []string{"hello"}},
+		{"single word with spaces", "  hello  ", []string{"default"}, []string{"hello"}},
 	}
 
 	for _, test := range tests {
-		result := StringToSlice(test.input, test.defaultValue...)
-		if !reflect.DeepEqual(result, test.expected) {
-			t.Errorf("StringToSlice(%q, %v) = %v, want %v", test.input, test.defaultValue, result, test.expected)
-		}
+		t.Run(test.name, func(t *testing.T) {
+			result := StringToSlice(test.input, test.defaultValue...)
+			if !reflect.DeepEqual(result, test.expected) {
+				t.Errorf("StringToSlice(%q, %v) = %v, want %v", test.input, test.defaultValue, result, test.expected)
+			}
+		})
 	}
 }
 

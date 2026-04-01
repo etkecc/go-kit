@@ -2,6 +2,7 @@ package kit
 
 import (
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -25,14 +26,14 @@ func TestWaitGroup(t *testing.T) {
 		{
 			name: "Do multiple funcs",
 			run: func(w *WaitGroup) int {
-				count := 0
+				var count atomic.Int64
 				fn := func() {
 					time.Sleep(10 * time.Millisecond)
-					count++
+					count.Add(1)
 				}
 				w.Do(fn, fn, fn)
 				w.Wait()
-				return count
+				return int(count.Load())
 			},
 			expect: 3,
 		},
@@ -70,7 +71,7 @@ func TestWaitGroup(t *testing.T) {
 					mu.Unlock()
 				}
 				funcs := make([]func(), 100)
-				for i := 0; i < 100; i++ {
+				for i := range 100 {
 					funcs[i] = increment
 				}
 				w.Do(funcs...)
