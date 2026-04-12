@@ -97,7 +97,7 @@ func TestMutex_KeyCleanup(t *testing.T) {
 		km.Unlock(key)
 	}
 
-	km.mu.Lock() //nolint:SA2001 // reading map len under lock
+	km.mu.Lock()
 	n := len(km.locks)
 	km.mu.Unlock()
 
@@ -125,7 +125,7 @@ func TestMutex_KeyCleanup_Concurrent(t *testing.T) {
 	}
 	wg.Wait()
 
-	km.mu.Lock() //nolint:SA2001 // reading map len under lock
+	km.mu.Lock()
 	n := len(km.locks)
 	km.mu.Unlock()
 
@@ -178,7 +178,7 @@ func TestMutex_ReuseAfterCleanup(t *testing.T) {
 	km.Lock(key)
 	km.Unlock(key)
 
-	km.mu.Lock() //nolint:SA2001 // reading map len under lock — not an empty section
+	km.mu.Lock()
 	n := len(km.locks)
 	km.mu.Unlock()
 	if n != 0 {
@@ -222,7 +222,7 @@ func TestMutex_UnlockAfterCleanup_NoOp(t *testing.T) {
 	// A second Unlock on the same key must be a no-op (not panic).
 	km.Unlock(key)
 
-	km.mu.Lock() //nolint:SA2001 // reading map len under lock
+	km.mu.Lock()
 	n := len(km.locks)
 	km.mu.Unlock()
 	if n != 0 {
@@ -256,7 +256,7 @@ func TestMutex_MultipleWaiters_RefcountIntegrity(t *testing.T) {
 	time.Sleep(20 * time.Millisecond) // let them block on m.mu.Lock
 
 	// Verify the entry exists and refcount reflects holder + waiters.
-	km.mu.Lock() //nolint:SA2001 // reading map fields under lock — not an empty section
+	km.mu.Lock()
 	m, exists := km.locks[key]
 	var rc int
 	if exists {
@@ -282,7 +282,7 @@ func TestMutex_MultipleWaiters_RefcountIntegrity(t *testing.T) {
 		}
 	}
 
-	km.mu.Lock() //nolint:SA2001 // reading map len under lock
+	km.mu.Lock()
 	n := len(km.locks)
 	km.mu.Unlock()
 	if n != 0 {
@@ -296,7 +296,7 @@ func BenchmarkSyncMutex(b *testing.B) {
 
 	for i := 0; i < b.N; i++ {
 		mu.Lock()
-		mu.Unlock() //nolint:gocritic,staticcheck,SA2001 // that's the point
+		mu.Unlock() //nolint:gocritic,staticcheck // that's the point
 	}
 }
 
@@ -328,7 +328,7 @@ func BenchmarkSyncMutexParallel(b *testing.B) {
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
 			mu.Lock()
-			mu.Unlock() //nolint:gocritic,staticcheck,SA2001 // that's the point
+			mu.Unlock() //nolint:gocritic,staticcheck // that's the point
 		}
 	})
 }
