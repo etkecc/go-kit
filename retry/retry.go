@@ -105,6 +105,10 @@ func (r *Retry) Do(fn func() error) error {
 // calculateJitter calculates a random jitter value to be added to the delay,
 // based on the delay value
 func (r *Retry) calculateJitter(delay time.Duration) time.Duration {
+	if delay <= 0 {
+		return 0
+	}
+
 	jitter := rand.Int63n(delay.Nanoseconds()) //nolint:gosec // that's fine for this use case
 	return delay + time.Duration(jitter)
 }

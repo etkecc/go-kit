@@ -87,6 +87,26 @@ func TestRetry_WithJitter(t *testing.T) {
 	}
 }
 
+// Test Retry with 0 delay and jitter automatically disabled
+func TestRetry_WithDelay0(t *testing.T) {
+	callCount := int32(0)
+
+	r := New(
+		WithJitter(true),
+		WithDelayStep(0),
+	)
+
+	// Use Do to ensure we kick in the retry logic
+	_ = r.Do(func() error {
+		atomic.AddInt32(&callCount, 1)
+		return errors.New("error")
+	})
+
+	if callCount != int32(DefaultMaxRetries) {
+		t.Errorf("expected %d calls, got %d", DefaultMaxRetries, callCount)
+	}
+}
+
 // Test Retry success on first try
 func TestRetry_SuccessOnFirstTry(t *testing.T) {
 	r := New()
