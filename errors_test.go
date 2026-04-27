@@ -1,6 +1,7 @@
 package kit
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -326,5 +327,19 @@ func TestMatrixErrorFromEmptyReader(t *testing.T) {
 
 	if matrixErr.Error() != expected {
 		t.Errorf("MatrixErrorFrom(empty reader) = %v, want `%s`", matrixErr, expected)
+	}
+}
+
+func TestIsContextError(t *testing.T) {
+	if !IsContextError(context.Canceled) {
+		t.Errorf("IsContextError(context.Canceled) = false, want true")
+	}
+
+	if !IsContextError(context.DeadlineExceeded) {
+		t.Errorf("IsContextError(context.DeadlineExceeded) = false, want true")
+	}
+
+	if IsContextError(errors.New("some other error")) {
+		t.Errorf("IsContextError(non-context error) = true, want false")
 	}
 }
