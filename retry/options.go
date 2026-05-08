@@ -12,8 +12,8 @@ const DefaultMaxRetries = 3
 const DefaultDelayStep = 1 * time.Second
 
 // DefaultJitter is the default setting for adding randomness to delays.
-// When true, jitter adds a random duration between 0 and the current base delay,
-// so the actual delay for attempt i ranges from delayStep*(i+1) to 2*delayStep*(i+1).
+// When true, full jitter (AWS canonical) is used: the actual delay is a random value in [0, base),
+// where base = delayStep*(i+1). Mean delay is 0.5*base.
 // When false, delays are deterministic: delayStep*1, delayStep*2, etc.
 const DefaultJitter = true
 
@@ -24,7 +24,7 @@ type Option func(*Retry)
 
 // WithMaxRetries sets the maximum number of attempts (1 initial + retries).
 // For example, WithMaxRetries(5) means the function will be called at most 5 times total.
-// Values of 0 or less disable all attempts: the Do loop will not execute and returns nil without calling fn.
+// Values less than 1 are clamped to 1 by New, ensuring fn is invoked at least once.
 func WithMaxRetries(maxRetries int) Option {
 	return func(r *Retry) {
 		r.maxRetries = maxRetries
@@ -42,11 +42,32 @@ func WithDelayStep(delayStep time.Duration) Option {
 }
 
 // WithJitter sets whether random jitter is added to each inter-attempt delay.
-// When true, a random duration between 0 and the base delay is added to each sleep,
-// reducing the likelihood of thundering herd problems in distributed systems.
+// When true, full jitter (AWS canonical) is used: the actual delay is a random value
+// in [0, base), reducing thundering herd problems in distributed systems.
 // When false, delays are deterministic: delayStep*(i+1) for attempt i (0-indexed).
 func WithJitter(jitter bool) Option {
 	return func(r *Retry) {
 		r.jitter = jitter
+	}
+}
+
+// WithRetryIf sets a predicate that decides whether an error is retryable.
+// If the predicate returns false, Do/DoCtx return the error immediately
+// without further attempts. Nil predicates are ignored (default behavior preserved).
+//
+// Example: don't retry on 4xx errors:
+//
+//	r := retry.New(retry.WithRetryIf(func(err error) bool {
+//	    var apiErr *APIError
+//	    if errors.As(err, &apiErr) && apiErr.StatusCode >= 400 && apiErr.StatusCode < 500 {
+//	        return false
+//	    }
+//	    return true
+//	}))
+func WithRetryIf(predicate func(error) bool) Option {
+	return func(r *Retry) {
+		if predicate != nil {
+			r.retryIf = predicate
+		}
 	}
 }
