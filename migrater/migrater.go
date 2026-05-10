@@ -82,12 +82,14 @@
 package migrater
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
 	"fmt"
 	"io/fs"
+	"math"
 	"path"
 	"regexp"
 	"sort"
@@ -276,7 +278,7 @@ func (*Migrater) numericKey(id string) int {
 	}
 	n, err := strconv.Atoi(id)
 	if err != nil {
-		return int(^uint(0) >> 1)
+		return math.MaxInt
 	}
 	return n
 }
@@ -295,6 +297,7 @@ func (m *Migrater) applyFile(ctx context.Context, f fs.DirEntry, applied map[str
 	if err != nil {
 		return fmt.Errorf("migrater: read %s: %w", f.Name(), err)
 	}
+	contentb = bytes.ReplaceAll(contentb, []byte("\r\n"), []byte("\n")) // normalize line endings to avoid spurious drift on Windows vs Unix hosts; this does not affect embedded migrations because Go embeds raw file bytes without conversion
 	content := string(contentb)
 	sum := sha256.Sum256(contentb)
 	contentHash := hex.EncodeToString(sum[:])
