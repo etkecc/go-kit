@@ -78,6 +78,11 @@ func WithInfoLog(fn LogFunc) Option {
 
 // WithDebugLog sets the function used for debug-level log messages.
 // Debug messages include query strings and row-level detail.
+//
+// Debug logging exposes the full SQL content of each migration file as it is
+// applied, plus the recorded content hash. Keep debug output out of
+// production logs unless migration content is non-sensitive.
+//
 // Pass nil to silence debug logging (the default).
 func WithDebugLog(fn LogFunc) Option {
 	return func(m *Migrater) {
@@ -96,6 +101,11 @@ func WithRecoverLog(fn LogFunc) Option {
 
 // WithTableName overrides the default state table name ("migrater_state").
 // Use this when the default name conflicts with an existing table in your schema.
+//
+// The name must be a simple SQL identifier: ASCII letter or underscore
+// followed by ASCII letters, digits, or underscores, up to 64 characters.
+// Schema-qualified names (e.g. "public.migrations") are not supported.
+// Invalid names are rejected by [Migrater.Run] before any database call.
 func WithTableName(name string) Option {
 	return func(m *Migrater) {
 		m.table = name
