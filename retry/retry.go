@@ -1,4 +1,4 @@
-// Package retry provides a simple retry mechanism for Go with exponential backoff and jitter.
+// Package retry provides a simple retry mechanism for Go with linear backoff and jitter.
 //
 // # Usage (simple)
 //
@@ -44,8 +44,29 @@ var (
 	ErrNilFn = errors.New("retry: nil fn")
 )
 
+// DelayHinter is implemented by errors that carry their own retry delay, the way an HTTP
+// 429 or 503 carries Retry-After. When DoCtx hits a retryable error whose chain satisfies
+// DelayHinter (matched by errors.As), that duration replaces the linear backoff for the
+// next wait, honored as a floor with up to 10% jitter so a fleet the server told to wait
+// doesn't wake in lockstep and hammer it anyway.
+//
+// Implement it on a VALUE receiver. A pointer-receiver method is not in a value's method
+// set, so a value-wrapped error slips past errors.As, the hint drops silently to default
+// backoff, and that lockstep stampede hits after all. The failure passes every test that
+// doesn't assert the delay.
+type DelayHinter interface {
+	SuggestedRetryDelay() time.Duration
+}
+
+// hintError is a bare delay carrier with no failure of its own, returned by After to
+// feed a duration through DoCtx via DelayHinter. Its methods take a value receiver so
+// errors.As matches it whether a caller wraps it by value or pointer.
+type hintError struct {
+	delay time.Duration
+}
+
 // Retry holds the configuration for executing a function with retry logic.
-// It implements exponential backoff with optional jitter to handle transient failures.
+// It implements linear backoff with optional jitter to handle transient failures.
 //
 // The Retry struct is not safe for concurrent use across goroutines if options are mutated
 // during Do execution. Do itself is stateless with respect to the struct fields.
@@ -93,13 +114,15 @@ func New(options ...Option) *Retry {
 // Returns ErrNilRetry, ErrNilContext, or ErrNilFn immediately if the receiver,
 // ctx, or fn are nil respectively.
 //
-// The function implements exponential backoff with optional jitter:
+// The function implements linear backoff with optional jitter:
 //   - Checks ctx.Err() before each attempt; returns ctx.Err() immediately if set
 //   - Executes fn immediately (attempt 1)
 //   - If fn returns nil, DoCtx returns nil immediately
 //   - If retryIf returns false for the error, DoCtx returns the error immediately
 //   - Between attempts, DoCtx sleeps for delayStep*(i+1); ctx cancellation interrupts the sleep
-//   - If jitter is enabled, the delay is a random duration in [0, base) — AWS full jitter
+//   - If jitter is enabled, the delay is a random duration in [0, base), AWS full jitter
+//   - If the error carries a DelayHinter (e.g. a Retry-After), its duration replaces
+//     the step as a floor with up to 10% jitter on top
 //   - After the final attempt, no sleep occurs
 //   - If all attempts fail, DoCtx returns the error from the last attempt
 func (r *Retry) DoCtx(ctx context.Context, fn func() error) error {
@@ -123,11 +146,7 @@ func (r *Retry) DoCtx(ctx context.Context, fn func() error) error {
 		if i == maxRetries-1 {
 			break
 		}
-		delay := r.delayStep * time.Duration(i+1)
-		if r.jitter {
-			delay = r.calculateJitter(delay)
-		}
-		if err := r.sleep(ctx, delay); err != nil {
+		if err := r.sleep(ctx, r.nextDelay(i, err)); err != nil {
 			return err
 		}
 	}
@@ -174,10 +193,49 @@ func (r *Retry) sleep(ctx context.Context, delay time.Duration) error {
 	}
 }
 
-// calculateJitter returns a random delay in [0, base) — AWS full jitter.
+// calculateJitter returns a random delay in [0, base), AWS full jitter.
 func (r *Retry) calculateJitter(delay time.Duration) time.Duration {
 	if delay <= 0 {
 		return 0
 	}
 	return time.Duration(rand.Int64N(delay.Nanoseconds())) //nolint:gosec // jitter does not require cryptographic randomness
+}
+
+// nextDelay returns the wait before attempt i+1's retry. A DelayHinter in err's chain
+// (a server's Retry-After, say) overrides the linear step: its duration is a floor with
+// up to 10% jitter, so a fleet handed the same interval doesn't wake in one wave. The
+// hint is read first so the linear branch's jitter roll is skipped when a hint applies.
+func (r *Retry) nextDelay(i int, err error) time.Duration {
+	var dh DelayHinter
+	if errors.As(err, &dh) {
+		if hint := dh.SuggestedRetryDelay(); hint > 0 {
+			if r.jitter {
+				return hint + r.calculateJitter(hint/10)
+			}
+			return hint
+		}
+	}
+	delay := r.delayStep * time.Duration(i+1)
+	if r.jitter {
+		delay = r.calculateJitter(delay)
+	}
+	return delay
+}
+
+// After returns an error that makes DoCtx wait d before the next attempt in place of the
+// linear step, the safe way to honor a server's Retry-After without hand-rolling
+// DelayHinter: skip it and a rate-limited fleet can wake in sync and slam the server again.
+// The returned value satisfies the interface on a value receiver, so errors.As matches it
+// whether a caller passes it by value or wraps a pointer to it. On its own it is a terminal
+// error like any other; the delay only fires when it reaches DoCtx as a retryable error.
+func After(d time.Duration) error {
+	return hintError{delay: d}
+}
+
+func (e hintError) Error() string {
+	return "retry: suggested delay " + e.delay.String()
+}
+
+func (e hintError) SuggestedRetryDelay() time.Duration {
+	return e.delay
 }

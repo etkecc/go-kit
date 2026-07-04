@@ -6,7 +6,7 @@ import "time"
 // When used with Do, the function will be called at most 3 times.
 const DefaultMaxRetries = 3
 
-// DefaultDelayStep is the default delay step applied in the exponential backoff calculation.
+// DefaultDelayStep is the default delay step applied in the linear backoff calculation.
 // Between attempt i (0-indexed) and the next, the delay is delayStep*(i+1) before jitter is applied.
 // With DefaultDelayStep=1s, the delays between attempts are approximately 1s, 2s, 3s (before jitter).
 const DefaultDelayStep = 1 * time.Second
@@ -31,7 +31,7 @@ func WithMaxRetries(maxRetries int) Option {
 	}
 }
 
-// WithDelayStep sets the base delay step for the exponential backoff.
+// WithDelayStep sets the base delay step for the linear backoff.
 // Between attempt i (0-indexed) and the next, the delay is delayStep*(i+1) before jitter.
 // A value of 0 disables the inter-attempt delay (no sleep between retries).
 // Negative values are treated as 0 by time.Sleep.
