@@ -70,6 +70,8 @@ func defaultConfig() *config {
 		responseHeaderTimeout: defaultResponseHeaderTimeout,
 		expectContinueTimeout: defaultExpectContinueTimeout,
 		perAttemptTimeout:     DefaultPerAttemptTimeout,
+		maxRetries:            defaultMaxRetries,
+		delayStep:             defaultDelayStep,
 		protocols:             protocols,
 		tlsMinVersion:         tls.VersionTLS12,
 		maxRetryAfter:         DefaultMaxRetryAfter,
@@ -150,7 +152,8 @@ func WithMaxRetryAfter(d time.Duration) RetryOption {
 }
 
 // WithRetry replaces the default retrier. The caller then owns backoff, jitter, and the
-// retry predicate; WithRetryIf is ignored once this is set.
+// retry predicate; WithRetryIf, WithMaxRetries, and WithRetryDelayStep are ignored once this
+// is set.
 func WithRetry(r *retry.Retry) RetryOption {
 	return retryOptionFunc(func(c *config) { c.retrier = r })
 }
@@ -159,6 +162,19 @@ func WithRetry(r *retry.Retry) RetryOption {
 // WithRetry supplies a full retrier.
 func WithRetryIf(predicate func(error) bool) RetryOption {
 	return retryOptionFunc(func(c *config) { c.retryIf = predicate })
+}
+
+// WithMaxRetries sets the default retrier's total attempt count, first try included: n=1 is one
+// shot, zero mercy. Same warty count as retry.WithMaxRetries; ignored when WithRetry brings its own.
+func WithMaxRetries(n int) RetryOption {
+	return retryOptionFunc(func(c *config) { c.maxRetries = n })
+}
+
+// WithRetryDelayStep sets the default retrier's linear backoff step: retry i waits step*(i+1),
+// jittered. Same retrier, same classifier, just a longer fuse before each try. Ignored when
+// WithRetry supplies its own.
+func WithRetryDelayStep(d time.Duration) RetryOption {
+	return retryOptionFunc(func(c *config) { c.delayStep = d })
 }
 
 // WithRetryNonIdempotent opts non-idempotent methods (POST, PATCH) into retry. Off by

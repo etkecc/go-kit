@@ -178,10 +178,8 @@ func TestSlowJobDoesNotStall(t *testing.T) {
 	base := time.Date(2026, 8, 3, 10, 0, 0, 0, time.UTC)
 
 	c.runDue(base)
-	waitCount(t, &fast, 1) // fast completes while slow is still blocked
-	if got := slow.Load(); got != 1 {
-		t.Fatalf("slow job should have started, got %d", got)
-	}
+	waitCount(t, &fast, 1) // fast completes while slow is still blocked: fire is async, runDue never waits
+	waitCount(t, &slow, 1) // slow was dispatched too, just parked in its blocking body
 	close(slowRelease)
 	c.wg.Wait()
 }

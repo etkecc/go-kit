@@ -79,6 +79,8 @@ type config struct {
 
 	retrier            *retry.Retry
 	retryIf            func(error) bool
+	maxRetries         int
+	delayStep          time.Duration
 	retryNonIdempotent bool
 	maxRetryAfter      time.Duration
 	budget             RetryBudget
@@ -165,8 +167,8 @@ func (c *config) buildRetrier() *retry.Retry {
 		classify = defaultRetryIf
 	}
 	return retry.New(
-		retry.WithMaxRetries(defaultMaxRetries),
-		retry.WithDelayStep(defaultDelayStep),
+		retry.WithMaxRetries(c.maxRetries),
+		retry.WithDelayStep(c.delayStep),
 		retry.WithJitter(true),
 		retry.WithRetryIf(classify),
 	)

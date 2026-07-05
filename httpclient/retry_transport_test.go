@@ -396,3 +396,45 @@ func TestRoundTrip_LinearBackoffTiming(t *testing.T) {
 		}
 	})
 }
+
+// WithMaxRetries and WithRetryDelayStep tune the built-in retrier rather than replacing it,
+// so the 429/5xx classifier rides along: a 500 keeps trying up to the configured total, and a
+// 401 still fails fast on the first response. If tuning had swapped the classifier for a bare
+// "retry any error" one, the 401 would keep knocking the full attempt count instead of once.
+func TestSingleHost_GranularRetryTuningKeepsClassifier(t *testing.T) {
+	t.Run("5xx honors WithMaxRetries", func(t *testing.T) {
+		var reqs atomic.Int32
+		srv := newTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			reqs.Add(1)
+			w.WriteHeader(http.StatusInternalServerError)
+		}))
+		client := NewSingleHost(WithMaxRetries(4), WithRetryDelayStep(time.Millisecond))
+
+		resp, err := client.Get(srv.URL)
+		if err != nil {
+			t.Fatalf("want live 500, got %v", err)
+		}
+		_ = resp.Body.Close()
+		if n := reqs.Load(); n != 4 {
+			t.Errorf("attempts = %d, want 4 (WithMaxRetries(4) = 4 total attempts)", n)
+		}
+	})
+
+	t.Run("4xx still fails fast under tuning", func(t *testing.T) {
+		var reqs atomic.Int32
+		srv := newTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			reqs.Add(1)
+			w.WriteHeader(http.StatusUnauthorized)
+		}))
+		client := NewSingleHost(WithMaxRetries(5), WithRetryDelayStep(time.Millisecond))
+
+		resp, err := client.Get(srv.URL)
+		if err != nil {
+			t.Fatalf("want live 401, got %v", err)
+		}
+		_ = resp.Body.Close()
+		if n := reqs.Load(); n != 1 {
+			t.Errorf("attempts = %d, want 1 (4xx terminal, classifier survived the tuning)", n)
+		}
+	})
+}
