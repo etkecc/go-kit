@@ -56,10 +56,7 @@ func TestRoundTrip_BodyReadableAfterReturn(t *testing.T) {
 	srv := newTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = io.WriteString(w, "hello world")
 	}))
-	client, err := NewSingleHost()
-	if err != nil {
-		t.Fatal(err)
-	}
+	client := NewSingleHost()
 
 	resp, err := client.Get(srv.URL)
 	if err != nil {
@@ -80,15 +77,12 @@ func TestRoundTrip_BodyReadableAfterReturn(t *testing.T) {
 // open a fresh connection per attempt and push the count past 1.
 func TestRoundTrip_RetryExhaustionLiveAndReuses(t *testing.T) {
 	srv, connCount := connCountingServer(t, statusSequenceHandler(500, 500, 500))
-	client, err := NewSingleHost(WithRetry(retry.New(
+	client := NewSingleHost(WithRetry(retry.New(
 		retry.WithMaxRetries(3),
 		retry.WithDelayStep(time.Millisecond),
 		retry.WithJitter(false),
 		retry.WithRetryIf(defaultRetryIf),
 	)))
-	if err != nil {
-		t.Fatal(err)
-	}
 
 	resp, err := client.Get(srv.URL)
 	if err != nil {

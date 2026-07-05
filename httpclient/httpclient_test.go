@@ -2,10 +2,11 @@ package httpclient
 
 import (
 	"crypto/tls"
-	"errors"
 	"net/http"
 	"testing"
 	"time"
+
+	"github.com/etkecc/go-kit/retry"
 )
 
 // Each option mutates exactly its config field.
@@ -30,7 +31,7 @@ func TestOptions_MutateConfig(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			c := defaultConfig()
-			tt.opt(c)
+			tt.opt.apply(c)
 			if !tt.ok(c) {
 				t.Errorf("%s did not mutate its config field", tt.name)
 			}
@@ -38,57 +39,9 @@ func TestOptions_MutateConfig(t *testing.T) {
 	}
 }
 
-// A transport-tuning option sets transportConfigured so it conflicts with a BYO client.
-func TestOptions_TransportKnobsFlagged(t *testing.T) {
-	knobs := []struct {
-		name string
-		opt  Option
-	}{
-		{"MaxIdleConns", WithMaxIdleConns(1)},
-		{"IdleConnTimeout", WithIdleConnTimeout(time.Second)},
-		{"Protocols", WithProtocols(new(http.Protocols))},
-		{"HTTP2Config", WithHTTP2Config(new(http.HTTP2Config))},
-		{"TLSMinVersion", WithTLSMinVersion(tls.VersionTLS13)},
-	}
-	for _, tt := range knobs {
-		t.Run(tt.name, func(t *testing.T) {
-			c := defaultConfig()
-			tt.opt(c)
-			if !c.transportConfigured {
-				t.Errorf("%s should have flagged transportConfigured", tt.name)
-			}
-		})
-	}
-}
-
-// A retry-layer option does NOT flag transportConfigured, so it composes with a BYO client.
-func TestOptions_RetryLayerNotFlagged(t *testing.T) {
-	for _, opt := range []Option{
-		WithPerAttemptTimeout(time.Second),
-		WithMaxRetryAfter(time.Second),
-		WithRetryNonIdempotent(true),
-		WithOnAttempt(func(AttemptInfo) {}),
-	} {
-		c := defaultConfig()
-		opt(c)
-		if c.transportConfigured {
-			t.Error("retry-layer option must not flag transportConfigured")
-		}
-	}
-}
-
-func TestNew_BYOTransportConflict(t *testing.T) {
-	_, err := New(WithHTTPClient(&http.Client{}), WithMaxIdleConns(10))
-	if !errors.Is(err, ErrTransportConflict) {
-		t.Fatalf("err = %v, want ErrTransportConflict", err)
-	}
-}
-
-func TestNew_BYOComposesWithRetryOption(t *testing.T) {
-	client, err := New(WithHTTPClient(&http.Client{Timeout: 3 * time.Second}), WithPerAttemptTimeout(time.Second))
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+// Wrap composes the retry layer onto a BYO client and keeps its Timeout.
+func TestWrap_ComposesRetryOntoBYO(t *testing.T) {
+	client := Wrap(&http.Client{Timeout: 3 * time.Second}, WithPerAttemptTimeout(time.Second))
 	if client.Timeout != 3*time.Second {
 		t.Errorf("BYO client Timeout not preserved: %v", client.Timeout)
 	}
@@ -97,12 +50,68 @@ func TestNew_BYOComposesWithRetryOption(t *testing.T) {
 	}
 }
 
+// A BYO client with no transport bases the retry layer on http.DefaultTransport.
+func TestWrap_NilTransportUsesDefault(t *testing.T) {
+	rt, ok := Wrap(&http.Client{}).Transport.(*retryTransport)
+	if !ok {
+		t.Fatal("transport is not *retryTransport")
+	}
+	if rt.base != http.DefaultTransport {
+		t.Errorf("base = %T, want http.DefaultTransport", rt.base)
+	}
+}
+
+// Wrap(nil) is usable: no panic, retry layer over the default transport.
+func TestWrap_NilClient(t *testing.T) {
+	rt, ok := Wrap(nil).Transport.(*retryTransport)
+	if !ok {
+		t.Fatal("Wrap(nil) transport is not *retryTransport")
+	}
+	if rt.base != http.DefaultTransport {
+		t.Errorf("base = %T, want http.DefaultTransport", rt.base)
+	}
+}
+
+// The only call site forcing every retry setter to actually return RetryOption: one typed
+// as Option would fail to compile in this variadic.
+func TestWrap_AllRetryOptionsApply(t *testing.T) {
+	retrier := retry.New(retry.WithMaxRetries(5))
+	client := Wrap(&http.Client{},
+		WithPerAttemptTimeout(2*time.Second),
+		WithMaxRetryAfter(time.Minute),
+		WithRetry(retrier),
+		WithRetryIf(func(error) bool { return true }),
+		WithRetryNonIdempotent(true),
+		WithRetryBudget(denyBudget{}),
+		WithOnAttempt(func(AttemptInfo) {}),
+	)
+	rt, ok := client.Transport.(*retryTransport)
+	if !ok {
+		t.Fatal("transport is not *retryTransport")
+	}
+	if rt.perAttempt != 2*time.Second {
+		t.Errorf("perAttempt = %v, want 2s", rt.perAttempt)
+	}
+	if rt.maxRetryAfter != time.Minute {
+		t.Errorf("maxRetryAfter = %v, want 1m", rt.maxRetryAfter)
+	}
+	if rt.retrier != retrier {
+		t.Error("WithRetry retrier not applied")
+	}
+	if !rt.nonIdem {
+		t.Error("WithRetryNonIdempotent not applied")
+	}
+	if _, ok := rt.budget.(denyBudget); !ok {
+		t.Errorf("budget = %T, want denyBudget", rt.budget)
+	}
+	if rt.onAttempt == nil {
+		t.Error("WithOnAttempt hook not applied")
+	}
+}
+
 // NewSingleHost sizes all three pool dimensions to DefaultPoolSize, global >= per-host.
 func TestNewSingleHost_PoolCoherence(t *testing.T) {
-	client, err := NewSingleHost()
-	if err != nil {
-		t.Fatal(err)
-	}
+	client := NewSingleHost()
 	rt, ok := client.Transport.(*retryTransport)
 	if !ok {
 		t.Fatal("transport is not *retryTransport")

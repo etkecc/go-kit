@@ -2,8 +2,9 @@
 // a right-sized connection pool, a deadline on each attempt, and transparent retries
 // that only replay requests it is safe to replay.
 //
-// New is the general constructor; NewSingleHost presets the pool for a single backend.
-// Both return a plain *http.Client used like any other. See the examples for usage.
+// New is the general constructor; NewSingleHost presets the pool for a single backend;
+// Wrap adds the retry layer to a caller-supplied client. All three return a plain
+// *http.Client with no error to check.
 //
 // Zero external dependencies: stdlib plus the go-kit retry sibling.
 package httpclient
@@ -24,11 +25,6 @@ var (
 	// already-consumed reader, so it fails loud instead of sending a truncated body on the
 	// second attempt.
 	ErrNonReplayableBody = errors.New("httpclient: retryable request has a body but no GetBody to rewind it")
-
-	// ErrTransportConflict is returned when WithHTTPClient supplies a base client and a
-	// transport-tuning option is also set. A BYO client owns transport tuning; honoring
-	// both would silently drop one, so construction stops here.
-	ErrTransportConflict = errors.New("httpclient: WithHTTPClient conflicts with transport-tuning options")
 
 	errAttemptTimeout  = errors.New("httpclient: per-attempt timeout")
 	errBudgetExhausted = errors.New("httpclient: retry budget exhausted")
@@ -87,61 +83,62 @@ type config struct {
 	maxRetryAfter      time.Duration
 	budget             RetryBudget
 
-	baseClient *http.Client
-	onAttempt  func(AttemptInfo)
-
-	// transportConfigured records that a transport-tuning option was set, so build can
-	// reject the WithHTTPClient conflict regardless of option order.
-	transportConfigured bool
+	onAttempt func(AttemptInfo)
 }
 
 // New builds a general-purpose retrying client, suitable for many hosts: per-host
 // connections stay uncapped and the idle pool is sized for throughput.
-func New(opts ...Option) (*http.Client, error) {
+func New(opts ...Option) *http.Client {
 	return defaultConfig().apply(opts).build()
 }
 
 // NewSingleHost presets the pool for one backend: all three pool dimensions sized to
 // DefaultPoolSize (per-host connections bounded, not merely idle-capped) plus HTTP/2
 // keepalive pings to notice a dead persistent connection.
-func NewSingleHost(opts ...Option) (*http.Client, error) {
+func NewSingleHost(opts ...Option) *http.Client {
 	return defaultConfig().apply(append([]Option{singleHostPreset()}, opts...)).build()
+}
+
+// Wrap adds the retry layer to a caller-supplied client, leaving its transport tuning
+// alone. It takes only RetryOption, so a transport knob is a compile error, not a runtime
+// conflict. A nil client is treated as empty. A non-zero client.Timeout is kept and bounds
+// the whole retry sequence, not one attempt. Do not Wrap a client that already carries this
+// package's retry middleware: the layers stack and attempts multiply.
+func Wrap(client *http.Client, opts ...RetryOption) *http.Client {
+	if client == nil {
+		client = &http.Client{}
+	}
+	c := defaultConfig()
+	for _, opt := range opts {
+		if opt != nil {
+			opt.apply(c)
+		}
+	}
+	base := client.Transport
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	return &http.Client{
+		Transport:     c.newRetryTransport(base),
+		CheckRedirect: client.CheckRedirect,
+		Jar:           client.Jar,
+		Timeout:       client.Timeout,
+	}
 }
 
 // apply runs the options in order, skipping nils, and returns the config for chaining.
 func (c *config) apply(opts []Option) *config {
 	for _, opt := range opts {
 		if opt != nil {
-			opt(c)
+			opt.apply(c)
 		}
 	}
 	return c
 }
 
-// build wires the config into a *http.Client, or returns a loud error.
-func (c *config) build() (*http.Client, error) {
-	if c.baseClient != nil {
-		return c.buildFromBase()
-	}
-	return &http.Client{Transport: c.newRetryTransport(c.newTransport())}, nil
-}
-
-// buildFromBase wraps a caller-supplied client's transport in the retry layer, refusing
-// any transport-tuning option since a BYO client owns that.
-func (c *config) buildFromBase() (*http.Client, error) {
-	if c.transportConfigured {
-		return nil, ErrTransportConflict
-	}
-	base := c.baseClient.Transport
-	if base == nil {
-		base = http.DefaultTransport
-	}
-	return &http.Client{
-		Transport:     c.newRetryTransport(base),
-		CheckRedirect: c.baseClient.CheckRedirect,
-		Jar:           c.baseClient.Jar,
-		Timeout:       c.baseClient.Timeout,
-	}, nil
+// build wires the config into a *http.Client.
+func (c *config) build() *http.Client {
+	return &http.Client{Transport: c.newRetryTransport(c.newTransport())}
 }
 
 // newRetryTransport wraps base in the retrying RoundTripper from the current config.

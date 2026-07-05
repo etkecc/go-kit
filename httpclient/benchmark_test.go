@@ -62,10 +62,7 @@ func drive(b *testing.B, client *http.Client, url string) {
 func BenchmarkGetParallel(b *testing.B) {
 	ts := benchServer(0)
 	defer ts.Close()
-	client, err := NewSingleHost()
-	if err != nil {
-		b.Fatal(err)
-	}
+	client := NewSingleHost()
 	drive(b, client, ts.URL)
 }
 
@@ -79,14 +76,11 @@ func BenchmarkPoolSweep(b *testing.B) {
 
 	for _, size := range []int{2, 16, 64, 256} {
 		b.Run(fmt.Sprintf("pool-%d", size), func(b *testing.B) {
-			client, err := NewSingleHost(
+			client := NewSingleHost(
 				WithMaxIdleConns(size),
 				WithMaxIdleConnsPerHost(size),
 				WithMaxConnsPerHost(size),
 			)
-			if err != nil {
-				b.Fatal(err)
-			}
 			drive(b, client, ts.URL)
 		})
 	}
