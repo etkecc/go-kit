@@ -38,7 +38,13 @@ const (
 	defaultExpectContinueTimeout = 1 * time.Second
 	defaultH2PingInterval        = 15 * time.Second
 	defaultH2PingTimeout         = 15 * time.Second
+	defaultDialTimeout           = 30 * time.Second
+	defaultDialKeepAlive         = 30 * time.Second
 )
+
+// dialIPKey carries a WithDialIP pin on the request context; a struct key can't collide with a
+// string key from another package.
+type dialIPKey struct{}
 
 // Option configures a client during New, NewSingleHost, or NewMultiHost, which take either kind
 // below. Each kind also satisfies a narrower interface, so the specialized constructors reject the
@@ -178,8 +184,35 @@ func WithTLSMinVersion(v uint16) TransportOption {
 // feels like, quietly undoing the pin. It runs concurrently across RoundTrips, so guard shared
 // resolver state; it also ghosts HTTP(S)_PROXY (that rides in addr too), leaving the proxy feeling
 // invited while every request strolls past it. Honor ctx cancellation and set a TCP timeout.
+// You own the dial now, so WithDialGuard does not reach this: put your own Control on the dialer.
 func WithDialContext(fn func(context.Context, string, string) (net.Conn, error)) TransportOption {
 	return optionFunc(func(c *config) { c.dialContext = fn })
+}
+
+// WithDialGuard refuses any dial to a private, loopback, link-local, or cloud-metadata IP, checked
+// at dial time on the resolved (and WithDialIP-pinned) address. Use it wherever a URL or redirect
+// target is attacker-influenced. It also nulls the proxy: a guard and an egress proxy are mutually
+// exclusive (Control would only ever see the proxy's IP), so the guard wins. Covers the built-in
+// dialer only, not a caller-supplied WithDialContext.
+func WithDialGuard() TransportOption {
+	return optionFunc(func(c *config) { c.dialControl = dialGuard })
+}
+
+// WithDialIP pins the TCP dial target for a delegated host whose resolved IP differs from its name.
+// Empty ip is a no-op. Takes effect only on the built-in dialer, not a WithDialContext override.
+func WithDialIP(ctx context.Context, ip string) context.Context {
+	if ip == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, dialIPKey{}, ip)
+}
+
+func dialIPFromContext(ctx context.Context) string {
+	ip, ok := ctx.Value(dialIPKey{}).(string)
+	if !ok {
+		return ""
+	}
+	return ip
 }
 
 // WithPerAttemptTimeout sets the deadline applied to each attempt; 0 disables it.

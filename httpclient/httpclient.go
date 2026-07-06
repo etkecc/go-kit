@@ -15,6 +15,7 @@ import (
 	"errors"
 	"net"
 	"net/http"
+	"syscall"
 	"time"
 
 	"github.com/etkecc/go-kit/retry"
@@ -79,6 +80,7 @@ type config struct {
 	http2         *http.HTTP2Config
 	tlsMinVersion uint16
 	dialContext   func(context.Context, string, string) (net.Conn, error)
+	dialControl   func(string, string, syscall.RawConn) error
 
 	retrier            *retry.Retry
 	retryIf            func(error) bool
@@ -213,9 +215,27 @@ func (c *config) newTransport() *http.Transport {
 		HTTP2:                 c.http2,
 		TLSClientConfig:       &tls.Config{MinVersion: c.tlsMinVersion},
 	}
-	// nil leaves the stdlib default dialer; the hook only ever redirects the dial target.
 	if c.dialContext != nil {
+		// caller owns the dial and its own Control; WithDialGuard does not reach here.
 		t.DialContext = c.dialContext
+	} else {
+		// built-in dialer: a 30s dial timeout + keepalive, carrying the guard (nil unless WithDialGuard)
+		// and honoring a WithDialIP pin by rewriting addr so Control fires on the pinned IP, not the name.
+		dialer := &net.Dialer{Timeout: defaultDialTimeout, KeepAlive: defaultDialKeepAlive, Control: c.dialControl}
+		t.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+			if pinned := dialIPFromContext(ctx); pinned != "" {
+				_, port, err := net.SplitHostPort(addr)
+				if err != nil {
+					return nil, err
+				}
+				addr = net.JoinHostPort(pinned, port)
+			}
+			return dialer.DialContext(ctx, network, addr)
+		}
+	}
+	if c.dialControl != nil {
+		// a guard and an egress proxy are mutually exclusive: Control would only see the proxy's IP.
+		t.Proxy = nil
 	}
 	return t
 }
