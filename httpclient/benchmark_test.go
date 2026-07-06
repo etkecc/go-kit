@@ -66,22 +66,59 @@ func BenchmarkGetParallel(b *testing.B) {
 	drive(b, client, ts.URL)
 }
 
-// BenchmarkPoolSweep sweeps the per-host connection pool against a latency-bearing server,
-// so throughput climbs with pool size until connection reuse stops being the bottleneck.
-// The chosen DefaultPoolSize is a floor: it should sit at or past where req/s plateaus.
+// BenchmarkPoolSweep drives a widening working set of delegated hosts through NewMultiHost, all
+// pinned to one latency-bearing backend via WithDialContext, so throughput reflects real fan-out
+// reuse. It reports open FDs per host-count, making the multi-host idle caps' effect on socket
+// pressure visible where the single-host 256-idle-per-host default would hoard.
 func BenchmarkPoolSweep(b *testing.B) {
 	ts := benchServer(10 * time.Millisecond)
 	defer ts.Close()
-	b.SetParallelism(32)
+	target := ts.Listener.Addr().String()
 
-	for _, size := range []int{2, 16, 64, 256} {
-		b.Run(fmt.Sprintf("pool-%d", size), func(b *testing.B) {
-			client := NewSingleHost(
-				WithMaxIdleConns(size),
-				WithMaxIdleConnsPerHost(size),
-				WithMaxConnsPerHost(size),
-			)
-			drive(b, client, ts.URL)
+	for _, hosts := range []int{1, 16, 128, 1024} {
+		b.Run(fmt.Sprintf("hosts-%d", hosts), func(b *testing.B) {
+			client := NewMultiHost(WithDialContext(dialPinnedTo(target)))
+			urls := make([]string, hosts)
+			for i := range urls {
+				urls[i] = fmt.Sprintf("http://h%d.test/", i)
+			}
+			driveHosts(b, client, urls)
+			b.ReportMetric(float64(openFDs(b)), "open_fds")
 		})
 	}
+}
+
+// driveHosts is drive for a working set: parallel GETs round-robined across urls through one shared
+// client, so pooling behaves as it would at real fan-out. Reports throughput; the caller reports FDs.
+func driveHosts(b *testing.B, client *http.Client, urls []string) {
+	b.Helper()
+	ctx := context.Background()
+	var total, idx uint64
+
+	b.SetParallelism(32)
+	b.ReportAllocs()
+	b.ResetTimer()
+	start := time.Now()
+	b.RunParallel(func(pb *testing.PB) {
+		var local uint64
+		for pb.Next() {
+			reqURL := urls[atomic.AddUint64(&idx, 1)%uint64(len(urls))]
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, http.NoBody)
+			if err != nil {
+				b.Error(err)
+				return
+			}
+			resp, err := client.Do(req)
+			if err != nil {
+				b.Error(err)
+				return
+			}
+			_, _ = io.Copy(io.Discard, resp.Body)
+			_ = resp.Body.Close()
+			local++
+		}
+		atomic.AddUint64(&total, local)
+	})
+	elapsed := time.Since(start)
+	b.ReportMetric(float64(total)/elapsed.Seconds(), "req/s")
 }

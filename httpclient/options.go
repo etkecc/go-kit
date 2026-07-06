@@ -1,7 +1,9 @@
 package httpclient
 
 import (
+	"context"
 	"crypto/tls"
+	"net"
 	"net/http"
 	"time"
 
@@ -20,6 +22,12 @@ const (
 	// DefaultMaxRetryAfter is the ceiling on an honored Retry-After: past it, the response
 	// is returned live instead of waiting.
 	DefaultMaxRetryAfter = 30 * time.Second
+	// DefaultMultiHostIdleConnsPerHost caps idle connections kept per host under NewMultiHost,
+	// low because a many-host crawler rarely revisits a host before the idle timeout reclaims it.
+	DefaultMultiHostIdleConnsPerHost = 2
+	// DefaultMultiHostIdleConnTimeout is how long NewMultiHost keeps an idle connection, short so
+	// a finished host's FDs come back fast during a wide fan-out.
+	DefaultMultiHostIdleConnTimeout = 30 * time.Second
 )
 
 const (
@@ -32,22 +40,30 @@ const (
 	defaultH2PingTimeout         = 15 * time.Second
 )
 
-// Option configures a client during New or NewSingleHost. Transport-tuning options satisfy
-// only Option; retry-layer options additionally satisfy RetryOption, so Wrap accepts them
-// while rejecting transport knobs at compile time.
+// Option configures a client during New, NewSingleHost, or NewMultiHost, which take either kind
+// below. Each kind also satisfies a narrower interface, so the specialized constructors reject the
+// wrong knob at compile time instead of swallowing it at runtime.
 type Option interface{ apply(*config) }
 
-// RetryOption is an Option that tunes the retry layer rather than the transport, so it is
-// valid on both a freshly built client (New/NewSingleHost) and a wrapped BYO client (Wrap).
+// TransportOption tunes the transport, so it is valid on NewTransport (a bare transport, no retry)
+// as well as the full-client constructors. A retry knob is not one, and won't compile on NewTransport.
+type TransportOption interface {
+	Option
+	isTransport()
+}
+
+// RetryOption tunes the retry layer, so it is valid on Wrap (retry over a BYO client) as well as
+// the full-client constructors. A transport knob is not one, and won't compile on Wrap.
 type RetryOption interface {
 	Option
 	isRetry()
 }
 
-// optionFunc adapts a plain config mutator into an Option.
+// optionFunc adapts a plain config mutator into a TransportOption.
 type optionFunc func(*config)
 
 func (f optionFunc) apply(c *config) { f(c) }
+func (optionFunc) isTransport()      {}
 
 // retryOptionFunc adapts a config mutator into a RetryOption: it satisfies apply (from
 // Option) and the isRetry marker, so it is usable everywhere an Option is.
@@ -79,66 +95,91 @@ func defaultConfig() *config {
 	}
 }
 
+// defaultHTTP2Config is the keepalive-ping config both presets layer on to catch a dead conn.
+func defaultHTTP2Config() *http.HTTP2Config {
+	return &http.HTTP2Config{
+		SendPingTimeout: defaultH2PingInterval,
+		PingTimeout:     defaultH2PingTimeout,
+	}
+}
+
 // singleHostPreset caps per-host connections to the pool size and enables HTTP/2 keepalive
 // pings, on top of the shared defaults. Applied before caller options, so callers still win.
 func singleHostPreset() Option {
 	return optionFunc(func(c *config) {
 		WithMaxConnsPerHost(DefaultPoolSize).apply(c)
-		WithHTTP2Config(&http.HTTP2Config{
-			SendPingTimeout: defaultH2PingInterval,
-			PingTimeout:     defaultH2PingTimeout,
-		}).apply(c)
+		WithHTTP2Config(defaultHTTP2Config()).apply(c)
+	})
+}
+
+// multiHostPreset trims per-host idle conns and reclaims them fast: a wide crawl meets each host once, then ghosts it.
+func multiHostPreset() Option {
+	return optionFunc(func(c *config) {
+		WithMaxIdleConnsPerHost(DefaultMultiHostIdleConnsPerHost).apply(c)
+		WithIdleConnTimeout(DefaultMultiHostIdleConnTimeout).apply(c)
+		WithHTTP2Config(defaultHTTP2Config()).apply(c)
 	})
 }
 
 // WithMaxIdleConns sets the total idle-connection pool size across all hosts.
-func WithMaxIdleConns(n int) Option {
+func WithMaxIdleConns(n int) TransportOption {
 	return optionFunc(func(c *config) { c.maxIdleConns = n })
 }
 
 // WithMaxIdleConnsPerHost sets the idle-connection pool size per host.
-func WithMaxIdleConnsPerHost(n int) Option {
+func WithMaxIdleConnsPerHost(n int) TransportOption {
 	return optionFunc(func(c *config) { c.maxIdleConnsPerHost = n })
 }
 
 // WithMaxConnsPerHost caps total (active plus idle) connections per host; 0 is unlimited.
-func WithMaxConnsPerHost(n int) Option {
+func WithMaxConnsPerHost(n int) TransportOption {
 	return optionFunc(func(c *config) { c.maxConnsPerHost = n })
 }
 
 // WithIdleConnTimeout sets how long an idle connection is kept before closing.
-func WithIdleConnTimeout(d time.Duration) Option {
+func WithIdleConnTimeout(d time.Duration) TransportOption {
 	return optionFunc(func(c *config) { c.idleConnTimeout = d })
 }
 
 // WithTLSHandshakeTimeout sets the TLS handshake deadline.
-func WithTLSHandshakeTimeout(d time.Duration) Option {
+func WithTLSHandshakeTimeout(d time.Duration) TransportOption {
 	return optionFunc(func(c *config) { c.tlsHandshakeTimeout = d })
 }
 
 // WithResponseHeaderTimeout sets how long to wait for response headers after the request.
-func WithResponseHeaderTimeout(d time.Duration) Option {
+func WithResponseHeaderTimeout(d time.Duration) TransportOption {
 	return optionFunc(func(c *config) { c.responseHeaderTimeout = d })
 }
 
 // WithExpectContinueTimeout sets the wait for a 100-Continue after Expect headers.
-func WithExpectContinueTimeout(d time.Duration) Option {
+func WithExpectContinueTimeout(d time.Duration) TransportOption {
 	return optionFunc(func(c *config) { c.expectContinueTimeout = d })
 }
 
 // WithProtocols sets the HTTP protocols the transport negotiates.
-func WithProtocols(p *http.Protocols) Option {
+func WithProtocols(p *http.Protocols) TransportOption {
 	return optionFunc(func(c *config) { c.protocols = p })
 }
 
 // WithHTTP2Config sets the transport's HTTP/2 configuration.
-func WithHTTP2Config(h2 *http.HTTP2Config) Option {
+func WithHTTP2Config(h2 *http.HTTP2Config) TransportOption {
 	return optionFunc(func(c *config) { c.http2 = h2 })
 }
 
 // WithTLSMinVersion sets the minimum accepted TLS version (e.g. tls.VersionTLS13).
-func WithTLSMinVersion(v uint16) Option {
+func WithTLSMinVersion(v uint16) TransportOption {
 	return optionFunc(func(c *config) { c.tlsMinVersion = v })
+}
+
+// WithDialContext redirects only the TCP dial to a caller-resolved IP; the URL host stays the pool
+// key, Host header, and SNI, which is what keeps two SNI-routed backends on one IP from colliding on
+// a shared TLS session. The dialer MUST dial that ctx IP and IGNORE addr: Go passes the URL host as
+// addr, so dialing it re-resolves through DNS and hands your pinned request to whatever the resolver
+// feels like, quietly undoing the pin. It runs concurrently across RoundTrips, so guard shared
+// resolver state; it also ghosts HTTP(S)_PROXY (that rides in addr too), leaving the proxy feeling
+// invited while every request strolls past it. Honor ctx cancellation and set a TCP timeout.
+func WithDialContext(fn func(context.Context, string, string) (net.Conn, error)) TransportOption {
+	return optionFunc(func(c *config) { c.dialContext = fn })
 }
 
 // WithPerAttemptTimeout sets the deadline applied to each attempt; 0 disables it.
