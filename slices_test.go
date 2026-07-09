@@ -111,14 +111,16 @@ func TestChunkSingleElement(t *testing.T) {
 	}
 }
 
-// TestChunkZeroSize tests Chunk when chunk size is zero
-func TestChunkZeroSize(t *testing.T) {
-	defer func() {
-		if r := recover(); r == nil {
-			t.Errorf("Chunk() did not panic when chunkSize was zero")
+// TestChunkNonPositiveSize verifies a non-positive chunkSize returns everything as one chunk
+// rather than panicking (chunkSize 0 would otherwise divide by zero).
+func TestChunkNonPositiveSize(t *testing.T) {
+	for _, size := range []int{0, -1, -5} {
+		got := Chunk([]int{1, 2, 3}, size)
+		want := [][]int{{1, 2, 3}}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("Chunk(size=%d) = %v, want %v", size, got, want)
 		}
-	}()
-	Chunk([]int{1, 2, 3}, 0)
+	}
 }
 
 // TestReverse tests the Reverse function

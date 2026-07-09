@@ -2,6 +2,7 @@ package workpool
 
 import (
 	"fmt"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -129,6 +130,39 @@ func TestWorkPoolAddAfterRun(t *testing.T) {
 
 	if count != 2 {
 		t.Errorf("expected 2 tasks to complete, got %d", count)
+	}
+}
+
+// TestWorkPoolRunIdempotent verifies a second Run is a safe no-op, not a double-close panic.
+func TestWorkPoolRunIdempotent(t *testing.T) {
+	wp := New(2)
+
+	var count int32
+	wp.Do(func() { atomic.AddInt32(&count, 1) })
+	wp.Run()
+	wp.Run() // must not panic on close-of-closed
+
+	if count != 1 {
+		t.Fatalf("expected 1 task to complete, got %d", count)
+	}
+}
+
+// TestWorkPoolConcurrentRun fires several Run calls at once; the CAS guard must let exactly one
+// close the queue, so this stays panic-free under -race.
+func TestWorkPoolConcurrentRun(t *testing.T) {
+	wp := New(3)
+	for range 5 {
+		wp.Do(func() {})
+	}
+
+	var wg sync.WaitGroup
+	for range 4 {
+		wg.Go(func() { wp.Run() })
+	}
+	wg.Wait()
+
+	if wp.IsRunning() {
+		t.Fatal("expected no tasks running after concurrent Run calls drained the pool")
 	}
 }
 

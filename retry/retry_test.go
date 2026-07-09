@@ -335,7 +335,7 @@ func TestRetry_Jitter_NeverExceedsBase(t *testing.T) {
 // Test zero-value Retry (bypassing New) does not panic and calls fn at least once
 func TestRetry_ZeroValue_NoPanic(t *testing.T) {
 	called := false
-	r := &Retry{} // maxRetries=0, retryIf=nil — both guarded inside DoCtx
+	r := &Retry{} // maxRetries=0, retryIf=nil, both guarded inside DoCtx
 	err := r.Do(func() error {
 		called = true
 		return errors.New("error")

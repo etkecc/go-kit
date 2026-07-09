@@ -488,7 +488,7 @@ func TestRun_TableNameValid(t *testing.T) {
 		"_state",
 		"State1",
 		"a",
-		"_", // solo underscore — valid SQL identifier
+		"_", // solo underscore, valid SQL identifier
 		"my_app_migrations",
 		strings.Repeat("a", 64), // exactly tableNameMaxLen
 	}
@@ -520,7 +520,7 @@ func TestRun_TableNameValid(t *testing.T) {
 
 // TestRun_RunTwice verifies that calling Run after the same migrations have
 // already been applied is a no-op. Continuity between runs is simulated with
-// a fresh mock conn pre-loaded with the recorded IDs and hashes — equivalent
+// a fresh mock conn pre-loaded with the recorded IDs and hashes, equivalent
 // to what a persistent database would carry forward.
 func TestRun_RunTwice(t *testing.T) {
 	contentA := "CREATE TABLE a (id INTEGER);"
@@ -530,7 +530,7 @@ func TestRun_RunTwice(t *testing.T) {
 		"migrations/002.sql", contentB,
 	)
 
-	// First Run with empty state — applies both migrations.
+	// First Run with empty state, applies both migrations.
 	conn1 := newMockConn(nil, nil)
 	m1 := newMigrater(t, conn1, fsys, "migrations")
 	if err := m1.Run(context.Background()); err != nil {
@@ -540,7 +540,7 @@ func TestRun_RunTwice(t *testing.T) {
 		t.Fatalf("first Run: expected 2 inserts, got %d", got)
 	}
 
-	// Second Run starting from the state the first Run produced — must be
+	// Second Run starting from the state the first Run produced, must be
 	// a complete no-op (no new INSERTs, no errors).
 	sumA := sha256.Sum256([]byte(contentA))
 	sumB := sha256.Sum256([]byte(contentB))
@@ -683,7 +683,7 @@ func TestRun_DriftDetected(t *testing.T) {
 }
 
 // TestRun_LegacyHashSkipsDrift verifies that a legacy applied row (NULL hash)
-// does not trigger drift detection even if the file has been modified — there
+// does not trigger drift detection even if the file has been modified, there
 // is no recorded hash to compare against.
 func TestRun_LegacyHashSkipsDrift(t *testing.T) {
 	conn := newMockConn([]string{"001"}, nil) // legacy: empty hash

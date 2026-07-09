@@ -16,7 +16,7 @@
 //	003-add-index.sql
 //
 // The migration ID stored in the state table is the leading numeric prefix
-// only (e.g. "001", "003") — the description suffix is ignored. Two files
+// only (e.g. "001", "003"), the description suffix is ignored. Two files
 // sharing the same numeric prefix (e.g. 001.sql and 001-foo.sql) cause
 // [Migrater.Run] to return an error before any migration is applied.
 //
@@ -36,7 +36,7 @@
 // re-hashed and compared against the stored hash; a mismatch is logged via
 // the info log to surface that the file has been modified after being
 // applied (database state and source files have diverged). Drift is
-// informational only — it does not block subsequent migrations or cause
+// informational only, it does not block subsequent migrations or cause
 // [Migrater.Run] to error.
 //
 // State tables created by versions of this package that did not include the
@@ -46,8 +46,8 @@
 //
 // The hash is computed over the raw bytes of each file. Files with different
 // line-ending conventions (CRLF vs LF) produce different hashes. When using
-// [WithDir] across mixed-platform hosts, ensure consistent line endings —
-// e.g. a `.gitattributes` entry such as `*.sql text eol=lf` — so the hash
+// [WithDir] across mixed-platform hosts, ensure consistent line endings,
+// e.g. a `.gitattributes` entry such as `*.sql text eol=lf`, so the hash
 // recorded by one host matches the hash computed by another. Embedded
 // migrations via `//go:embed` are not affected (Go embeds raw file bytes
 // without conversion).
@@ -104,7 +104,7 @@ import (
 // developer-set values passed via [WithTableName] from accidentally
 // introducing injection vectors.
 //
-// Schema-qualified names (e.g. "public.migrations") are not supported —
+// Schema-qualified names (e.g. "public.migrations") are not supported,
 // the dot is rejected. Non-ASCII letters are also rejected; pick an
 // ASCII-only name for the state table.
 var tableNameRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
@@ -161,7 +161,7 @@ func New(db *sql.DB, options ...Option) *Migrater {
 // Run applies all pending migration files in numeric order.
 //
 // Run is safe to call multiple times; migrations already recorded in the state
-// table are skipped. All applied IDs are loaded with a single SELECT at startup —
+// table are skipped. All applied IDs are loaded with a single SELECT at startup,
 // there is no per-migration round-trip to the state table.
 //
 // Each migration runs in its own transaction. If a migration fails the
@@ -269,7 +269,7 @@ func (m *Migrater) collectFiles() ([]fs.DirEntry, error) {
 //
 // migrationID returns only digits for non-empty ids, so [strconv.Atoi] fails
 // only on overflow (>~19 digits). The error branch maps to math.MaxInt as
-// belt-and-braces — strconv.Atoi already clamps to math.MaxInt on positive
+// belt-and-braces, strconv.Atoi already clamps to math.MaxInt on positive
 // overflow, but the explicit assignment makes the intent obvious without
 // relying on package-level behavior.
 func (*Migrater) numericKey(id string) int {
@@ -306,7 +306,7 @@ func (m *Migrater) applyFile(ctx context.Context, f fs.DirEntry, applied map[str
 		if storedHash != "" && storedHash != contentHash {
 			m.logf(m.info,
 				"drift detected: migration %s (%s) content has changed since it was applied "+
-					"(stored hash %s, current %s) — file and database have diverged",
+					"(stored hash %s, current %s), file and database have diverged",
 				id, f.Name(), storedHash, contentHash,
 			)
 		} else {

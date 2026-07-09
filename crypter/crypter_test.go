@@ -207,7 +207,7 @@ func TestDecrypt_ShortCiphertext_NoAuthTag(t *testing.T) {
 		name   string
 		rawLen int
 	}{
-		// Exactly nonceSize bytes: valid nonce, zero-length ct — no room for the GCM tag.
+		// Exactly nonceSize bytes: valid nonce, zero-length ct, no room for the GCM tag.
 		{"nonce only", c.nonceSize},
 		// nonceSize + overhead - 1: partial tag, still one byte short.
 		{"partial tag", c.nonceSize + overhead - 1},
@@ -368,7 +368,7 @@ func TestCrypter_ConcurrentEncryptDecrypt(t *testing.T) {
 
 // TestEncrypt_AllocCount pins the number of heap allocations per Encrypt call.
 // If this test fails after a code change, the change introduced an unexpected allocation.
-// Expected: 5 allocs — owned nonce copy, []byte(data) conversion, raw buffer, output buffer, final string.
+// Expected: 5 allocs: owned nonce copy, []byte(data) conversion, raw buffer, output buffer, final string.
 // The pool buffer used for random reading is not counted (comes from sync.Pool).
 func TestEncrypt_AllocCount(t *testing.T) {
 	c, err := New(testKey)

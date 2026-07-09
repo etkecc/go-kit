@@ -309,6 +309,24 @@ func TestMatrixErrorFromInvalidJSON(t *testing.T) {
 	}
 }
 
+// TestMatrixErrorFromBounded verifies the body read is capped, so a hostile server can't turn a
+// "decode the error" call into an unbounded read.
+func TestMatrixErrorFromBounded(t *testing.T) {
+	huge := strings.Repeat("x", 1<<20) // 1 MiB of non-JSON garbage
+	matrixErr := MatrixErrorFrom(strings.NewReader(huge))
+
+	if matrixErr == nil {
+		t.Fatal("MatrixErrorFrom() returned nil, expected non-nil")
+	}
+	if got := matrixErr.Code; got != "M_UNKNOWN" {
+		t.Errorf("MatrixErrorFrom().Code = %v, want M_UNKNOWN", got)
+	}
+	// The captured body rides along in the message; it must reflect the cap, not the full 1 MiB.
+	if len(matrixErr.Err) > maxMatrixErrorBody+1024 {
+		t.Errorf("MatrixErrorFrom().Err length = %d, want capped near %d", len(matrixErr.Err), maxMatrixErrorBody)
+	}
+}
+
 // TestMatrixErrorFromNilReader tests MatrixErrorFrom with a nil reader
 func TestMatrixErrorFromNilReader(t *testing.T) {
 	matrixErr := MatrixErrorFrom(nil)
